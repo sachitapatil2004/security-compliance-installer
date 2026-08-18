@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 
 # ============================================================
-# SECURITY COMPLIANCE RELEASE 1
+# Security Compliance Release 1
 #
 # Supported:
 #   - Ubuntu / Debian
-#   - Fedora / RHEL / CentOS
+#   - Fedora / RHEL
+#   - CentOS
 #   - SUSE
 #   - macOS Intel
 #   - macOS Apple Silicon
@@ -14,11 +15,19 @@
 # Installs:
 #   - Gitleaks 8.30.0
 #   - Global Git pre-commit secret scanning
-#   - tmate
-#   - Ansible
-#   - OpenSSH client
-#   - OpenSSH server on Linux
+#   - Linux:
+#       tmate
+#       Ansible
+#       OpenSSH client
+#       OpenSSH server
+#   - macOS:
+#       tmate
+#       Ansible
+#       OpenSSH client
 #
+# Output:
+#   Only clean installation status messages are displayed.
+#   Package-manager logs are hidden.
 # ============================================================
 
 set -u
@@ -37,7 +46,7 @@ HOOK_FILE="$HOOK_DIR/pre-commit"
 TMP_ROOT=""
 
 # ============================================================
-# OUTPUT FUNCTIONS
+# Output
 # ============================================================
 
 info() {
@@ -65,10 +74,11 @@ fail() {
 }
 
 # ============================================================
-# CLEANUP
+# Cleanup
 # ============================================================
 
 cleanup() {
+
     if [ -n "${TMP_ROOT:-}" ] && [ -d "$TMP_ROOT" ]; then
         rm -rf "$TMP_ROOT"
     fi
@@ -77,8 +87,10 @@ cleanup() {
 trap cleanup EXIT
 
 # ============================================================
-# HEADER
+# Header
 # ============================================================
+
+clear 2>/dev/null || true
 
 echo ""
 echo "============================================================"
@@ -88,7 +100,7 @@ echo "============================================================"
 echo ""
 
 # ============================================================
-# DETECT OPERATING SYSTEM
+# Detect OS
 # ============================================================
 
 RAW_OS="$(uname -s 2>/dev/null || true)"
@@ -115,7 +127,7 @@ case "$RAW_OS" in
 esac
 
 # ============================================================
-# OS INFORMATION
+# Detect OS Version
 # ============================================================
 
 OS_NAME="Unknown"
@@ -144,31 +156,13 @@ elif [ "$PLATFORM" = "darwin" ]; then
     OS_NAME="macOS"
 
     OS_VERSION="$(
-        sw_vers -productVersion 2>/dev/null ||
-        echo "Unknown"
+        sw_vers -productVersion 2>/dev/null || echo "Unknown"
     )"
 
 elif [ "$PLATFORM" = "windows" ]; then
 
     OS_NAME="Windows"
-
-    if command -v powershell.exe >/dev/null 2>&1; then
-
-        OS_VERSION="$(
-            powershell.exe \
-                -NoProfile \
-                -NonInteractive \
-                -Command \
-                "(Get-CimInstance Win32_OperatingSystem).Version" \
-                2>/dev/null |
-                tr -d '\r'
-        )"
-
-    else
-
-        OS_VERSION="Git Bash"
-
-    fi
+    OS_VERSION="Git Bash"
 
 fi
 
@@ -180,7 +174,7 @@ info "Platform         : $PLATFORM"
 echo ""
 
 # ============================================================
-# ARCHITECTURE
+# Architecture
 # ============================================================
 
 case "$ARCH" in
@@ -202,34 +196,39 @@ esac
 success "Architecture detected: $GITLEAKS_ARCH"
 
 # ============================================================
-# REQUIRED COMMANDS
+# Check Git
 # ============================================================
 
 if ! command -v git >/dev/null 2>&1; then
-    fail "Git is required. Please install Git first."
-fi
-
-if ! command -v curl >/dev/null 2>&1; then
-    fail "curl is required. Please install curl first."
+    fail "Git is required. Please install Git and run again."
 fi
 
 success "Git detected: $(git --version)"
+
+# ============================================================
+# Check curl
+# ============================================================
+
+if ! command -v curl >/dev/null 2>&1; then
+    fail "curl is required. Please install curl and run again."
+fi
+
 success "curl is available."
 
 # ============================================================
-# CREATE DIRECTORIES
+# Create directories
 # ============================================================
 
-info "Creating Security Compliance directories..."
+mkdir -p "$BIN_DIR" || fail "Unable to create installation directory."
+mkdir -p "$CONFIG_DIR" || fail "Unable to create configuration directory."
+mkdir -p "$HOOK_DIR" || fail "Unable to create Git hooks directory."
 
-mkdir -p "$BIN_DIR" || fail "Unable to create $BIN_DIR"
-mkdir -p "$CONFIG_DIR" || fail "Unable to create $CONFIG_DIR"
-mkdir -p "$HOOK_DIR" || fail "Unable to create $HOOK_DIR"
+export PATH="$BIN_DIR:$PATH"
 
-success "Directories created."
+success "Security Compliance directories ready."
 
 # ============================================================
-# GITLEAKS PATH
+# Gitleaks Path
 # ============================================================
 
 if [ "$PLATFORM" = "windows" ]; then
@@ -238,38 +237,36 @@ else
     GITLEAKS="$BIN_DIR/gitleaks"
 fi
 
-export PATH="$BIN_DIR:$PATH"
-
 # ============================================================
-# INSTALL GITLEAKS
+# Install Gitleaks
 # ============================================================
 
 install_gitleaks() {
 
+    local installed_version=""
+
     if [ -f "$GITLEAKS" ] || [ -x "$GITLEAKS" ]; then
 
-        CURRENT_VERSION="$(
+        installed_version="$(
             "$GITLEAKS" version 2>/dev/null || true
         )"
 
-        if [ "$CURRENT_VERSION" = "$GITLEAKS_VERSION" ]; then
+        if [ "$installed_version" = "$GITLEAKS_VERSION" ]; then
 
             success "Gitleaks $GITLEAKS_VERSION is already installed."
             return 0
 
         fi
 
-        warning "Existing Gitleaks version: $CURRENT_VERSION"
+        info "Updating Gitleaks to version $GITLEAKS_VERSION..."
+
+    else
+
+        info "Installing Gitleaks $GITLEAKS_VERSION..."
 
     fi
 
-    info "Installing Gitleaks $GITLEAKS_VERSION..."
-
     TMP_ROOT="$(mktemp -d)" || fail "Unable to create temporary directory."
-
-    # --------------------------------------------------------
-    # Linux
-    # --------------------------------------------------------
 
     if [ "$PLATFORM" = "linux" ]; then
 
@@ -277,7 +274,7 @@ install_gitleaks() {
 
         URL="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${ARCHIVE}"
 
-        curl \
+        if ! curl \
             --fail \
             --silent \
             --show-error \
@@ -287,25 +284,31 @@ install_gitleaks() {
             --retry 3 \
             "$URL" \
             -o "$TMP_ROOT/gitleaks.tar.gz" \
-            || fail "Unable to download Gitleaks."
+            >/dev/null 2>&1; then
 
-        tar \
+            fail "Unable to download Gitleaks."
+        fi
+
+        if ! tar \
             -xzf "$TMP_ROOT/gitleaks.tar.gz" \
             -C "$TMP_ROOT" \
-            || fail "Unable to extract Gitleaks."
+            >/dev/null 2>&1; then
 
-        [ -f "$TMP_ROOT/gitleaks" ] \
-            || fail "Gitleaks binary was not found."
+            fail "Unable to extract Gitleaks."
+        fi
 
-        install \
+        if [ ! -f "$TMP_ROOT/gitleaks" ]; then
+            fail "Gitleaks binary was not found."
+        fi
+
+        if ! install \
             -m 0755 \
             "$TMP_ROOT/gitleaks" \
             "$GITLEAKS" \
-            || fail "Unable to install Gitleaks."
+            >/dev/null 2>&1; then
 
-    # --------------------------------------------------------
-    # macOS
-    # --------------------------------------------------------
+            fail "Unable to install Gitleaks."
+        fi
 
     elif [ "$PLATFORM" = "darwin" ]; then
 
@@ -313,7 +316,7 @@ install_gitleaks() {
 
         URL="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${ARCHIVE}"
 
-        curl \
+        if ! curl \
             --fail \
             --silent \
             --show-error \
@@ -323,25 +326,31 @@ install_gitleaks() {
             --retry 3 \
             "$URL" \
             -o "$TMP_ROOT/gitleaks.tar.gz" \
-            || fail "Unable to download Gitleaks."
+            >/dev/null 2>&1; then
 
-        tar \
+            fail "Unable to download Gitleaks."
+        fi
+
+        if ! tar \
             -xzf "$TMP_ROOT/gitleaks.tar.gz" \
             -C "$TMP_ROOT" \
-            || fail "Unable to extract Gitleaks."
+            >/dev/null 2>&1; then
 
-        [ -f "$TMP_ROOT/gitleaks" ] \
-            || fail "Gitleaks binary was not found."
+            fail "Unable to extract Gitleaks."
+        fi
 
-        install \
+        if [ ! -f "$TMP_ROOT/gitleaks" ]; then
+            fail "Gitleaks binary was not found."
+        fi
+
+        if ! install \
             -m 0755 \
             "$TMP_ROOT/gitleaks" \
             "$GITLEAKS" \
-            || fail "Unable to install Gitleaks."
+            >/dev/null 2>&1; then
 
-    # --------------------------------------------------------
-    # Windows / Git Bash
-    # --------------------------------------------------------
+            fail "Unable to install Gitleaks."
+        fi
 
     elif [ "$PLATFORM" = "windows" ]; then
 
@@ -349,7 +358,7 @@ install_gitleaks() {
 
         URL="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${ARCHIVE}"
 
-        curl \
+        if ! curl \
             --fail \
             --silent \
             --show-error \
@@ -359,15 +368,17 @@ install_gitleaks() {
             --retry 3 \
             "$URL" \
             -o "$TMP_ROOT/gitleaks.zip" \
-            || fail "Unable to download Gitleaks."
+            >/dev/null 2>&1; then
+
+            fail "Unable to download Gitleaks."
+        fi
 
         if command -v unzip >/dev/null 2>&1; then
 
-            unzip \
-                -q \
+            unzip -q \
                 "$TMP_ROOT/gitleaks.zip" \
                 -d "$TMP_ROOT" \
-                || fail "Unable to extract Gitleaks."
+                >/dev/null 2>&1 || fail "Unable to extract Gitleaks."
 
         elif command -v powershell.exe >/dev/null 2>&1; then
 
@@ -379,6 +390,7 @@ install_gitleaks() {
                 -NonInteractive \
                 -Command \
                 "Expand-Archive -Force '$ZIP_WIN' '$DEST_WIN'" \
+                >/dev/null 2>&1 \
                 || fail "Unable to extract Gitleaks."
 
         else
@@ -387,45 +399,42 @@ install_gitleaks() {
 
         fi
 
-        [ -f "$TMP_ROOT/gitleaks.exe" ] \
-            || fail "gitleaks.exe was not found."
+        if [ ! -f "$TMP_ROOT/gitleaks.exe" ]; then
+            fail "Gitleaks executable was not found."
+        fi
 
         cp "$TMP_ROOT/gitleaks.exe" "$GITLEAKS" \
+            >/dev/null 2>&1 \
             || fail "Unable to install Gitleaks."
 
         chmod +x "$GITLEAKS" 2>/dev/null || true
 
     fi
 
-    success "Gitleaks installed."
-
+    success "Gitleaks $GITLEAKS_VERSION installed successfully."
 }
 
 install_gitleaks
 
 # ============================================================
-# VERIFY GITLEAKS
+# Verify Gitleaks
 # ============================================================
-
-info "Verifying Gitleaks..."
 
 INSTALLED_VERSION="$(
     "$GITLEAKS" version 2>/dev/null || true
 )"
 
 if [ "$INSTALLED_VERSION" != "$GITLEAKS_VERSION" ]; then
-
     fail "Gitleaks verification failed. Expected $GITLEAKS_VERSION, found $INSTALLED_VERSION."
-
 fi
 
-success "Gitleaks version verified: $INSTALLED_VERSION"
+success "Gitleaks verified: $INSTALLED_VERSION"
 
 # ============================================================
-# CREATE GITLEAKS CONFIGURATION
+# Gitleaks Configuration
 # ============================================================
 
-info "Creating Gitleaks configuration..."
+info "Configuring secret detection..."
 
 cat > "$CONFIG_FILE" <<'EOF'
 title = "Security Compliance Release 1"
@@ -442,13 +451,13 @@ EOF
 
 chmod 600 "$CONFIG_FILE"
 
-success "Gitleaks configuration created."
+success "Secret detection rules configured."
 
 # ============================================================
-# CREATE GLOBAL PRE-COMMIT HOOK
+# Global Git Pre-Commit Hook
 # ============================================================
 
-info "Creating global Git pre-commit hook..."
+info "Configuring global Git secret scanning..."
 
 cat > "$HOOK_FILE" <<'HOOK'
 #!/usr/bin/env bash
@@ -465,82 +474,29 @@ fi
 
 CONFIG="$SECURITY_ROOT/config/gitleaks.toml"
 
-# ------------------------------------------------------------
-# Verify scanner
-# ------------------------------------------------------------
-
-if [ ! -f "$GITLEAKS" ] && [ ! -x "$GITLEAKS" ]; then
-
-    echo ""
-    echo "=================================================="
-    echo "SECURITY COMPLIANCE ERROR"
-    echo "=================================================="
-    echo "Gitleaks scanner is unavailable."
-    echo "Commit blocked."
-    echo ""
-
+if [ ! -f "$GITLEAKS" ]; then
+    echo "[ERROR] Gitleaks scanner is unavailable."
+    echo "[ERROR] Commit blocked."
     exit 1
 fi
-
-# ------------------------------------------------------------
-# Verify config
-# ------------------------------------------------------------
 
 if [ ! -f "$CONFIG" ]; then
-
-    echo ""
-    echo "=================================================="
-    echo "SECURITY COMPLIANCE ERROR"
-    echo "=================================================="
-    echo "Gitleaks configuration is unavailable."
-    echo "Commit blocked."
-    echo ""
-
+    echo "[ERROR] Gitleaks configuration is unavailable."
+    echo "[ERROR] Commit blocked."
     exit 1
 fi
 
-# ------------------------------------------------------------
-# Get staged files
-# ------------------------------------------------------------
-
-STAGED_FILES=()
-
-while IFS= read -r -d '' FILE; do
-    STAGED_FILES+=("$FILE")
-done < <(
-    git diff --cached \
-        --name-only \
-        --diff-filter=ACMR \
-        -z
-)
-
-if [ "${#STAGED_FILES[@]}" -eq 0 ]; then
-    exit 0
-fi
-
-echo ""
-echo "=================================================="
-echo "       SECURITY COMPLIANCE SECRET SCAN"
-echo "=================================================="
-echo ""
-echo "Scanning staged changes..."
-echo ""
-
-TMP_ROOT="$(mktemp -d)"
+TEMP_DIR="$(mktemp -d)"
 
 cleanup() {
-    rm -rf "$TMP_ROOT"
+    rm -rf "$TEMP_DIR"
 }
 
 trap cleanup EXIT
 
 FOUND_LEAK=0
 
-# ------------------------------------------------------------
-# Scan each staged file
-# ------------------------------------------------------------
-
-for FILE in "${STAGED_FILES[@]}"; do
+while IFS= read -r -d '' FILE; do
 
     HASH="$(
         printf '%s' "$FILE" |
@@ -548,33 +504,16 @@ for FILE in "${STAGED_FILES[@]}"; do
         cut -d' ' -f1
     )"
 
-    TEMP_FILE="$TMP_ROOT/$HASH"
+    TEMP_FILE="$TEMP_DIR/$HASH"
 
-    # Get EXACT staged version
     if ! git show ":$FILE" > "$TEMP_FILE" 2>/dev/null; then
 
-        echo "[ERROR] Unable to read staged file:"
-        echo "        $FILE"
+        echo "[ERROR] Unable to read staged file: $FILE"
 
         FOUND_LEAK=1
         continue
 
     fi
-
-    # --------------------------------------------------------
-    # Skip binary files
-    # --------------------------------------------------------
-
-    if file "$TEMP_FILE" 2>/dev/null |
-        grep -qi "binary"; then
-
-        continue
-
-    fi
-
-    # --------------------------------------------------------
-    # Run Gitleaks
-    # --------------------------------------------------------
 
     SCAN_OUTPUT="$(
         "$GITLEAKS" dir "$TEMP_FILE" \
@@ -587,88 +526,138 @@ for FILE in "${STAGED_FILES[@]}"; do
 
     EXIT_CODE=$?
 
-    # --------------------------------------------------------
-    # Leak found
-    # --------------------------------------------------------
-
     if [ "$EXIT_CODE" -eq 1 ]; then
 
         echo ""
         echo "=================================================="
-        echo "       SECURITY COMPLIANCE CHECK FAILED"
+        echo "       SECRET DETECTED"
         echo "=================================================="
         echo ""
-        echo "Potential secret detected in:"
-        echo ""
+        echo "File:"
         echo "  $FILE"
         echo ""
         echo "$SCAN_OUTPUT"
         echo ""
-        echo "Commit BLOCKED."
+        echo "Commit blocked."
         echo ""
 
         FOUND_LEAK=1
 
-    # --------------------------------------------------------
-    # Scanner error
-    # --------------------------------------------------------
-
     elif [ "$EXIT_CODE" -ne 0 ]; then
 
         echo ""
-        echo "=================================================="
-        echo "       SECURITY SCANNER ERROR"
-        echo "=================================================="
-        echo ""
+        echo "[ERROR] Gitleaks scan failed."
         echo "$SCAN_OUTPUT"
         echo ""
-        echo "Commit BLOCKED."
-        echo ""
+        echo "Commit blocked."
 
         FOUND_LEAK=1
 
     fi
 
-done
-
-# ============================================================
-# FINAL RESULT
-# ============================================================
+done < <(
+    git diff --cached \
+        --name-only \
+        --diff-filter=ACMR \
+        -z
+)
 
 if [ "$FOUND_LEAK" -ne 0 ]; then
     exit 1
 fi
 
-echo ""
-echo "=================================================="
-echo "       SECURITY COMPLIANCE CHECK PASSED"
-echo "       No secrets detected."
-echo "=================================================="
-echo ""
-
+echo "[SUCCESS] No secrets detected."
 exit 0
 HOOK
 
 chmod 700 "$HOOK_FILE"
 
-success "Global Git pre-commit hook created."
+git config --global core.hooksPath "$HOOK_DIR" \
+    || fail "Unable to configure global Git hooks."
+
+success "Global Git secret scanning enabled."
 
 # ============================================================
-# CONFIGURE GLOBAL GIT HOOK
+# Generic Package Installation Helper
 # ============================================================
 
-info "Configuring Git global hooks path..."
+install_package() {
 
-git config \
-    --global \
-    core.hooksPath \
-    "$HOOK_DIR" \
-    || fail "Unable to configure Git global hooks path."
+    TOOL_NAME="$1"
+    PACKAGE_NAME="$2"
 
-success "Global Git hooks configured."
+    case "$PACKAGE_MANAGER" in
+
+        apt)
+
+            if sudo apt-get install -y "$PACKAGE_NAME" \
+                >/dev/null 2>&1; then
+
+                success "$TOOL_NAME installed successfully."
+
+            else
+
+                warning "$TOOL_NAME installation failed."
+
+                return 1
+            fi
+            ;;
+
+        dnf)
+
+            if sudo dnf install -y "$PACKAGE_NAME" \
+                >/dev/null 2>&1; then
+
+                success "$TOOL_NAME installed successfully."
+
+            else
+
+                warning "$TOOL_NAME installation failed."
+
+                return 1
+            fi
+            ;;
+
+        yum)
+
+            if sudo yum install -y "$PACKAGE_NAME" \
+                >/dev/null 2>&1; then
+
+                success "$TOOL_NAME installed successfully."
+
+            else
+
+                warning "$TOOL_NAME installation failed."
+
+                return 1
+            fi
+            ;;
+
+        zypper)
+
+            if sudo zypper \
+                --non-interactive \
+                install \
+                "$PACKAGE_NAME" \
+                >/dev/null 2>&1; then
+
+                success "$TOOL_NAME installed successfully."
+
+            else
+
+                warning "$TOOL_NAME installation failed."
+
+                return 1
+            fi
+            ;;
+
+    esac
+
+    return 0
+}
 
 # ============================================================
-# LINUX TOOLS
+# Linux Tools
 # ============================================================
 
 install_linux_tools() {
@@ -682,157 +671,122 @@ install_linux_tools() {
     echo ""
 
     if ! command -v sudo >/dev/null 2>&1; then
-
-        warning "sudo is not available."
-        warning "Skipping tmate, Ansible and OpenSSH installation."
-
-        return 0
-
+        fail "sudo is required to install Linux tools."
     fi
 
-    PACKAGE_MANAGER=""
-
     if command -v apt-get >/dev/null 2>&1; then
+
         PACKAGE_MANAGER="apt"
 
     elif command -v dnf >/dev/null 2>&1; then
+
         PACKAGE_MANAGER="dnf"
 
     elif command -v yum >/dev/null 2>&1; then
+
         PACKAGE_MANAGER="yum"
 
     elif command -v zypper >/dev/null 2>&1; then
+
         PACKAGE_MANAGER="zypper"
 
     else
 
-        warning "Unsupported Linux package manager."
-        warning "Skipping additional DevOps tools."
-
-        return 0
-
+        fail "Unsupported Linux package manager."
     fi
 
-    info "Package manager: $PACKAGE_MANAGER"
+    info "Preparing package manager..."
 
-    # --------------------------------------------------------
-    # APT
-    # --------------------------------------------------------
-
+    # Do not show apt output.
     if [ "$PACKAGE_MANAGER" = "apt" ]; then
 
-        info "Updating package information..."
+        if ! sudo apt-get update -y >/dev/null 2>&1; then
 
-        if ! sudo apt-get update; then
+            warning "Package repository update failed."
+            warning "Continuing with existing package information."
 
-            warning "apt update failed."
-            warning "Continuing security installation."
+        else
+
+            success "Package information updated."
 
         fi
 
-        info "Installing tmate..."
-
-        sudo apt-get install -y tmate || {
-            warning "tmate installation failed."
-        }
-
-        info "Installing OpenSSH..."
-
-        sudo apt-get install -y \
-            openssh-client \
-            openssh-server || {
-            warning "OpenSSH installation failed."
-        }
-
-        info "Installing Ansible..."
-
-        sudo apt-get install -y ansible || {
-            warning "Ansible installation failed."
-            warning "This does not affect Gitleaks."
-        }
+    fi
 
     # --------------------------------------------------------
-    # DNF
+    # tmate
     # --------------------------------------------------------
 
-    elif [ "$PACKAGE_MANAGER" = "dnf" ]; then
+    if command -v tmate >/dev/null 2>&1; then
+
+        success "tmate is already installed."
+
+    else
 
         info "Installing tmate..."
 
-        sudo dnf install -y tmate || {
-            warning "tmate installation failed."
-        }
-
-        info "Installing OpenSSH..."
-
-        sudo dnf install -y \
-            openssh-clients \
-            openssh-server || {
-            warning "OpenSSH installation failed."
-        }
-
-        info "Installing Ansible..."
-
-        sudo dnf install -y ansible || {
-            warning "Ansible installation failed."
-        }
-
-    # --------------------------------------------------------
-    # YUM
-    # --------------------------------------------------------
-
-    elif [ "$PACKAGE_MANAGER" = "yum" ]; then
-
-        info "Installing tmate..."
-
-        sudo yum install -y tmate || {
-            warning "tmate installation failed."
-        }
-
-        info "Installing OpenSSH..."
-
-        sudo yum install -y \
-            openssh-clients \
-            openssh-server || {
-            warning "OpenSSH installation failed."
-        }
-
-        info "Installing Ansible..."
-
-        sudo yum install -y ansible || {
-            warning "Ansible installation failed."
-        }
-
-    # --------------------------------------------------------
-    # SUSE
-    # --------------------------------------------------------
-
-    elif [ "$PACKAGE_MANAGER" = "zypper" ]; then
-
-        info "Installing tmate..."
-
-        sudo zypper --non-interactive install tmate || {
-            warning "tmate installation failed."
-        }
-
-        info "Installing OpenSSH..."
-
-        sudo zypper --non-interactive install \
-            openssh-clients \
-            openssh-server || {
-            warning "OpenSSH installation failed."
-        }
-
-        info "Installing Ansible..."
-
-        sudo zypper --non-interactive install ansible || {
-            warning "Ansible installation failed."
-        }
+        install_package "tmate" "tmate" || true
 
     fi
 
     # --------------------------------------------------------
-    # SSH SERVER
+    # OpenSSH Client
+    # --------------------------------------------------------
+
+    if command -v ssh >/dev/null 2>&1; then
+
+        success "OpenSSH client is already installed."
+
+    else
+
+        info "Installing OpenSSH client..."
+
+        if [ "$PACKAGE_MANAGER" = "apt" ]; then
+            install_package "OpenSSH client" "openssh-client" || true
+        else
+            install_package "OpenSSH client" "openssh-clients" || true
+        fi
+
+    fi
+
+    # --------------------------------------------------------
+    # OpenSSH Server
+    # --------------------------------------------------------
+
+    if command -v sshd >/dev/null 2>&1; then
+
+        success "OpenSSH server is already installed."
+
+    else
+
+        info "Installing OpenSSH server..."
+
+        if [ "$PACKAGE_MANAGER" = "apt" ]; then
+            install_package "OpenSSH server" "openssh-server" || true
+        else
+            install_package "OpenSSH server" "openssh-server" || true
+        fi
+
+    fi
+
+    # --------------------------------------------------------
+    # Ansible
+    # --------------------------------------------------------
+
+    if command -v ansible >/dev/null 2>&1; then
+
+        success "Ansible is already installed."
+
+    else
+
+        info "Installing Ansible..."
+
+        install_package "Ansible" "ansible" || true
+
+    fi
+
+    # --------------------------------------------------------
+    # SSH Service
     # --------------------------------------------------------
 
     if command -v systemctl >/dev/null 2>&1; then
@@ -840,58 +794,49 @@ install_linux_tools() {
         if systemctl list-unit-files 2>/dev/null |
             grep -q "^ssh.service"; then
 
-            info "Configuring SSH service..."
-
-            sudo systemctl enable ssh 2>/dev/null || true
-            sudo systemctl start ssh 2>/dev/null || true
+            sudo systemctl enable ssh >/dev/null 2>&1 || true
+            sudo systemctl start ssh >/dev/null 2>&1 || true
 
         elif systemctl list-unit-files 2>/dev/null |
             grep -q "^sshd.service"; then
 
-            info "Configuring SSH service..."
-
-            sudo systemctl enable sshd 2>/dev/null || true
-            sudo systemctl start sshd 2>/dev/null || true
+            sudo systemctl enable sshd >/dev/null 2>&1 || true
+            sudo systemctl start sshd >/dev/null 2>&1 || true
 
         fi
 
     fi
 
-    # --------------------------------------------------------
-    # Verification
-    # --------------------------------------------------------
-
     echo ""
-    info "Verifying Linux tools..."
+    info "Linux DevOps tools verification..."
 
     if command -v tmate >/dev/null 2>&1; then
-        success "tmate installed."
+        success "tmate: INSTALLED"
     else
-        warning "tmate is not available."
-    fi
-
-    if command -v ssh >/dev/null 2>&1; then
-        success "OpenSSH client installed."
-    else
-        warning "OpenSSH client is not available."
-    fi
-
-    if command -v sshd >/dev/null 2>&1; then
-        success "OpenSSH server installed."
-    else
-        warning "OpenSSH server is not available."
+        warning "tmate: NOT INSTALLED"
     fi
 
     if command -v ansible >/dev/null 2>&1; then
-        success "Ansible installed."
+        success "Ansible: INSTALLED"
     else
-        warning "Ansible is not available."
+        warning "Ansible: NOT INSTALLED"
     fi
 
+    if command -v ssh >/dev/null 2>&1; then
+        success "OpenSSH client: INSTALLED"
+    else
+        warning "OpenSSH client: NOT INSTALLED"
+    fi
+
+    if command -v sshd >/dev/null 2>&1; then
+        success "OpenSSH server: INSTALLED"
+    else
+        warning "OpenSSH server: NOT INSTALLED"
+    fi
 }
 
 # ============================================================
-# macOS TOOLS
+# macOS Tools
 # ============================================================
 
 install_macos_tools() {
@@ -904,64 +849,72 @@ install_macos_tools() {
     echo "============================================================"
     echo ""
 
-    # --------------------------------------------------------
-    # Homebrew
-    # --------------------------------------------------------
-
     if ! command -v brew >/dev/null 2>&1; then
 
-        warning "Homebrew is not installed."
+        info "Homebrew is not installed."
         info "Installing Homebrew..."
 
-        /bin/bash -c \
+        if ! /bin/bash -c \
             "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" \
-            || {
-                warning "Homebrew installation failed."
-                return 0
-            }
+            >/dev/null 2>&1; then
+
+            fail "Homebrew installation failed."
+
+        fi
 
         if [ -x "/opt/homebrew/bin/brew" ]; then
-
             eval "$(/opt/homebrew/bin/brew shellenv)"
-
         elif [ -x "/usr/local/bin/brew" ]; then
-
             eval "$(/usr/local/bin/brew shellenv)"
-
         fi
 
     fi
 
     if ! command -v brew >/dev/null 2>&1; then
-
-        warning "Homebrew is unavailable."
-        warning "Skipping macOS DevOps tools."
-
-        return 0
-
+        fail "Homebrew is unavailable."
     fi
 
-    success "Homebrew available."
+    success "Homebrew is available."
 
     # --------------------------------------------------------
     # tmate
     # --------------------------------------------------------
 
-    info "Installing tmate..."
+    if command -v tmate >/dev/null 2>&1; then
 
-    brew install tmate || {
-        warning "tmate installation failed."
-    }
+        success "tmate is already installed."
+
+    else
+
+        info "Installing tmate..."
+
+        if brew install tmate >/dev/null 2>&1; then
+            success "tmate installed successfully."
+        else
+            warning "tmate installation failed."
+        fi
+
+    fi
 
     # --------------------------------------------------------
     # Ansible
     # --------------------------------------------------------
 
-    info "Installing Ansible..."
+    if command -v ansible >/dev/null 2>&1; then
 
-    brew install ansible || {
-        warning "Ansible installation failed."
-    }
+        success "Ansible is already installed."
+
+    else
+
+        info "Installing Ansible..."
+
+        if brew install ansible >/dev/null 2>&1; then
+            success "Ansible installed successfully."
+        else
+            warning "Ansible installation failed."
+        fi
+
+    fi
 
     # --------------------------------------------------------
     # OpenSSH
@@ -969,57 +922,46 @@ install_macos_tools() {
 
     if command -v ssh >/dev/null 2>&1; then
 
-        success "OpenSSH client already available."
+        success "OpenSSH client is already available."
 
     else
 
-        info "Installing OpenSSH client..."
+        info "Installing OpenSSH..."
 
-        brew install openssh || {
+        if brew install openssh >/dev/null 2>&1; then
+            success "OpenSSH client installed successfully."
+        else
             warning "OpenSSH installation failed."
-        }
+        fi
 
     fi
-
-    # --------------------------------------------------------
-    # Verification
-    # --------------------------------------------------------
 
     echo ""
-    info "Verifying macOS tools..."
+    info "macOS DevOps tools verification..."
 
-    if command -v tmate >/dev/null 2>&1; then
-        success "tmate installed."
-    else
-        warning "tmate is not available."
-    fi
+    command -v tmate >/dev/null 2>&1 &&
+        success "tmate: INSTALLED" ||
+        warning "tmate: NOT INSTALLED"
 
-    if command -v ansible >/dev/null 2>&1; then
-        success "Ansible installed."
-    else
-        warning "Ansible is not available."
-    fi
+    command -v ansible >/dev/null 2>&1 &&
+        success "Ansible: INSTALLED" ||
+        warning "Ansible: NOT INSTALLED"
 
-    if command -v ssh >/dev/null 2>&1; then
-        success "OpenSSH client available."
-    else
-        warning "OpenSSH client is not available."
-    fi
-
+    command -v ssh >/dev/null 2>&1 &&
+        success "OpenSSH client: INSTALLED" ||
+        warning "OpenSSH client: NOT INSTALLED"
 }
 
 # ============================================================
-# RUN OS-SPECIFIC INSTALLATION
+# Run Tool Installation
 # ============================================================
 
 install_linux_tools
 install_macos_tools
 
 # ============================================================
-# PERSISTENT PATH
+# Persistent PATH
 # ============================================================
-
-info "Configuring Gitleaks PATH..."
 
 if [ "$PLATFORM" = "darwin" ]; then
     PROFILE_FILE="$HOME/.zshrc"
@@ -1044,47 +986,45 @@ fi
 success "Gitleaks PATH configured."
 
 # ============================================================
-# FINAL SECURITY VERIFICATION
+# Final Verification
 # ============================================================
 
 echo ""
 echo "============================================================"
-echo "       FINAL SECURITY VERIFICATION"
+echo "       FINAL VERIFICATION"
 echo "============================================================"
 echo ""
 
-if ! "$GITLEAKS" version >/dev/null 2>&1; then
-    fail "Gitleaks final verification failed."
+if "$GITLEAKS" version >/dev/null 2>&1; then
+    success "Gitleaks: INSTALLED"
+else
+    fail "Gitleaks verification failed."
 fi
 
-if [ ! -f "$CONFIG_FILE" ]; then
-    fail "Gitleaks configuration is missing."
+if [ -f "$CONFIG_FILE" ]; then
+    success "Gitleaks configuration: CREATED"
+else
+    fail "Gitleaks configuration missing."
 fi
 
-if [ ! -f "$HOOK_FILE" ]; then
-    fail "Git pre-commit hook is missing."
+if [ -f "$HOOK_FILE" ]; then
+    success "Global Git pre-commit hook: CREATED"
+else
+    fail "Git pre-commit hook missing."
 fi
 
 HOOK_PATH="$(
-    git config \
-        --global \
-        --get core.hooksPath \
-        2>/dev/null || true
+    git config --global --get core.hooksPath 2>/dev/null || true
 )"
 
-if [ "$HOOK_PATH" != "$HOOK_DIR" ]; then
-
-    fail "Git global hooks path is incorrect. Found: $HOOK_PATH"
-
+if [ "$HOOK_PATH" = "$HOOK_DIR" ]; then
+    success "Global Git hooks: ENABLED"
+else
+    fail "Global Git hooks configuration failed."
 fi
 
-success "Gitleaks verified."
-success "Gitleaks configuration verified."
-success "Git pre-commit hook verified."
-success "Global Git hooks path verified."
-
 # ============================================================
-# FINAL OUTPUT
+# Final Summary
 # ============================================================
 
 echo ""
@@ -1093,46 +1033,55 @@ echo "       SECURITY COMPLIANCE INSTALLATION COMPLETE"
 echo "============================================================"
 echo ""
 
-success "Security Compliance $VERSION installed successfully."
+success "Security Compliance installation completed."
 
 echo ""
-echo "Operating System : $OS_NAME"
-echo "OS Version       : $OS_VERSION"
-echo "Architecture     : $ARCH"
-echo "Gitleaks Version : $INSTALLED_VERSION"
+echo "Installed components:"
 echo ""
-echo "Installation:"
-echo "  $INSTALL_ROOT"
-echo ""
-echo "Configuration:"
-echo "  $CONFIG_FILE"
-echo ""
-echo "Git Hook:"
-echo "  $HOOK_FILE"
-echo ""
-echo "Global Git Hooks:"
-echo "  $HOOK_PATH"
-echo ""
+
+success "Gitleaks $GITLEAKS_VERSION"
+success "Global Git secret scanning"
 
 if [ "$PLATFORM" = "linux" ]; then
 
-    echo "Linux tools attempted:"
-    echo "  - tmate"
-    echo "  - Ansible"
-    echo "  - OpenSSH client"
-    echo "  - OpenSSH server"
+    command -v tmate >/dev/null 2>&1 &&
+        success "tmate" ||
+        warning "tmate"
+
+    command -v ansible >/dev/null 2>&1 &&
+        success "Ansible" ||
+        warning "Ansible"
+
+    command -v ssh >/dev/null 2>&1 &&
+        success "OpenSSH client" ||
+        warning "OpenSSH client"
+
+    command -v sshd >/dev/null 2>&1 &&
+        success "OpenSSH server" ||
+        warning "OpenSSH server"
 
 elif [ "$PLATFORM" = "darwin" ]; then
 
-    echo "macOS tools attempted:"
-    echo "  - tmate"
-    echo "  - Ansible"
-    echo "  - OpenSSH client"
+    command -v tmate >/dev/null 2>&1 &&
+        success "tmate" ||
+        warning "tmate"
+
+    command -v ansible >/dev/null 2>&1 &&
+        success "Ansible" ||
+        warning "Ansible"
+
+    command -v ssh >/dev/null 2>&1 &&
+        success "OpenSSH client" ||
+        warning "OpenSSH client"
 
 fi
 
 echo ""
-echo "Git secret scanning is now enabled globally."
+echo "Installation directory:"
+echo "  $INSTALL_ROOT"
+echo ""
+echo "Git hooks:"
+echo "  $HOOK_DIR"
 echo ""
 echo "============================================================"
 echo ""
