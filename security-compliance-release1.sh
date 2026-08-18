@@ -1,7 +1,28 @@
 #!/usr/bin/env bash
 
+# ============================================================
+# Security Compliance Installer
+#
+# Supported:
+#   Linux
+#   macOS
+#   Windows through Git Bash
+#
+# Installs silently:
+#   - Gitleaks 8.30.0
+#   - Global Git pre-commit secret scanning
+#   - tmate
+#   - Ansible
+#   - OpenSSH client
+#   - OpenSSH server on Linux
+#
+# FINAL OUTPUT:
+#   SUCCESS: Gitleaks installed
+# ============================================================
+
 set -u
 
+VERSION="release1"
 GITLEAKS_VERSION="8.30.0"
 
 INSTALL_ROOT="$HOME/.security-compliance"
@@ -15,6 +36,49 @@ HOOK_FILE="$HOOK_DIR/pre-commit"
 TMP_ROOT=""
 
 # ============================================================
+# SILENT MODE
+# ============================================================
+
+exec 3>&1
+
+info() {
+    :
+}
+
+success() {
+    :
+}
+
+warning() {
+    :
+}
+
+error() {
+    printf '%s\n' "ERROR: $1" >&3
+}
+
+fail() {
+    error "Security Compliance installation failed."
+    exit 1
+}
+
+# ============================================================
+# Cleanup
+# ============================================================
+
+cleanup() {
+
+    if [ -n "${TMP_ROOT:-}" ] &&
+       [ -d "$TMP_ROOT" ]; then
+
+        rm -rf "$TMP_ROOT" >/dev/null 2>&1 || true
+
+    fi
+}
+
+trap cleanup EXIT
+
+# ============================================================
 # Detect OS
 # ============================================================
 
@@ -22,87 +86,125 @@ RAW_OS="$(uname -s 2>/dev/null || true)"
 ARCH="$(uname -m 2>/dev/null || true)"
 
 case "$RAW_OS" in
+
     Linux*)
         PLATFORM="linux"
         ;;
+
     Darwin*)
         PLATFORM="darwin"
         ;;
+
     MINGW*|MSYS*|CYGWIN*)
         PLATFORM="windows"
         ;;
+
     *)
-        echo "[ERROR] Unsupported operating system"
-        exit 1
+        fail
         ;;
+
 esac
+
+# ============================================================
+# Detect OS Information
+# ============================================================
+
+OS_NAME="Unknown"
+OS_VERSION="Unknown"
+LINUX_ID=""
+
+if [ "$PLATFORM" = "linux" ]; then
+
+    if [ -f /etc/os-release ]; then
+
+        . /etc/os-release
+
+        LINUX_ID="${ID:-unknown}"
+        OS_NAME="${NAME:-Linux}"
+        OS_VERSION="${VERSION_ID:-Unknown}"
+
+    else
+
+        OS_NAME="Linux"
+        OS_VERSION="$(uname -r)"
+
+    fi
+
+elif [ "$PLATFORM" = "darwin" ]; then
+
+    OS_NAME="macOS"
+
+    OS_VERSION="$(
+        sw_vers -productVersion 2>/dev/null ||
+        echo "Unknown"
+    )"
+
+elif [ "$PLATFORM" = "windows" ]; then
+
+    OS_NAME="Windows"
+    OS_VERSION="Git Bash"
+
+fi
 
 # ============================================================
 # Detect Architecture
 # ============================================================
 
 case "$ARCH" in
+
     x86_64|amd64)
         GITLEAKS_ARCH="x64"
         ;;
+
     aarch64|arm64)
         GITLEAKS_ARCH="arm64"
         ;;
+
     *)
-        echo "[ERROR] Unsupported architecture"
-        exit 1
+        fail
         ;;
+
 esac
 
 # ============================================================
-# Check Requirements
+# Check Git
 # ============================================================
 
 if ! command -v git >/dev/null 2>&1; then
-    echo "[ERROR] Git is required"
-    exit 1
+    fail
 fi
 
+# ============================================================
+# Check curl
+# ============================================================
+
 if ! command -v curl >/dev/null 2>&1; then
-    echo "[ERROR] curl is required"
-    exit 1
+    fail
 fi
 
 # ============================================================
 # Create Directories
 # ============================================================
 
-mkdir -p "$BIN_DIR" "$CONFIG_DIR" "$HOOK_DIR" 2>/dev/null || {
-    echo "[ERROR] Unable to create installation directories"
-    exit 1
-}
+mkdir -p "$BIN_DIR" >/dev/null 2>&1 || fail
+mkdir -p "$CONFIG_DIR" >/dev/null 2>&1 || fail
+mkdir -p "$HOOK_DIR" >/dev/null 2>&1 || fail
 
 # ============================================================
 # Gitleaks Path
 # ============================================================
 
 if [ "$PLATFORM" = "windows" ]; then
+
     GITLEAKS="$BIN_DIR/gitleaks.exe"
+
 else
+
     GITLEAKS="$BIN_DIR/gitleaks"
+
 fi
 
 export PATH="$BIN_DIR:$PATH"
-
-# ============================================================
-# Temporary Directory
-# ============================================================
-
-TMP_ROOT="$(mktemp -d 2>/dev/null)" || {
-    echo "[ERROR] Unable to create temporary directory"
-    exit 1
-}
-
-cleanup() {
-    rm -rf "$TMP_ROOT" 2>/dev/null || true
-}
-
-trap cleanup EXIT
 
 # ============================================================
 # Install Gitleaks
@@ -110,11 +212,13 @@ trap cleanup EXIT
 
 install_gitleaks() {
 
-    # Already installed
+    CURRENT_VERSION=""
+
     if [ -f "$GITLEAKS" ] || [ -x "$GITLEAKS" ]; then
 
         CURRENT_VERSION="$(
-            "$GITLEAKS" version 2>/dev/null || true
+            "$GITLEAKS" version 2>/dev/null ||
+            true
         )"
 
         if [ "$CURRENT_VERSION" = "$GITLEAKS_VERSION" ]; then
@@ -122,6 +226,8 @@ install_gitleaks() {
         fi
 
     fi
+
+    TMP_ROOT="$(mktemp -d 2>/dev/null)" || fail
 
     # --------------------------------------------------------
     # Linux
@@ -134,24 +240,29 @@ install_gitleaks() {
         URL="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${ARCHIVE}"
 
         curl \
-            -fsSL \
+            --fail \
+            --silent \
+            --show-error \
+            --location \
+            --proto '=https' \
+            --tlsv1.2 \
             --retry 3 \
             "$URL" \
             -o "$TMP_ROOT/gitleaks.tar.gz" \
-            >/dev/null 2>&1 || return 1
+            >/dev/null 2>&1 || fail
 
         tar \
             -xzf "$TMP_ROOT/gitleaks.tar.gz" \
             -C "$TMP_ROOT" \
-            >/dev/null 2>&1 || return 1
+            >/dev/null 2>&1 || fail
 
-        [ -f "$TMP_ROOT/gitleaks" ] || return 1
+        [ -f "$TMP_ROOT/gitleaks" ] || fail
 
         install \
             -m 0755 \
             "$TMP_ROOT/gitleaks" \
             "$GITLEAKS" \
-            >/dev/null 2>&1 || return 1
+            >/dev/null 2>&1 || fail
 
     # --------------------------------------------------------
     # macOS
@@ -164,27 +275,32 @@ install_gitleaks() {
         URL="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${ARCHIVE}"
 
         curl \
-            -fsSL \
+            --fail \
+            --silent \
+            --show-error \
+            --location \
+            --proto '=https' \
+            --tlsv1.2 \
             --retry 3 \
             "$URL" \
             -o "$TMP_ROOT/gitleaks.tar.gz" \
-            >/dev/null 2>&1 || return 1
+            >/dev/null 2>&1 || fail
 
         tar \
             -xzf "$TMP_ROOT/gitleaks.tar.gz" \
             -C "$TMP_ROOT" \
-            >/dev/null 2>&1 || return 1
+            >/dev/null 2>&1 || fail
 
-        [ -f "$TMP_ROOT/gitleaks" ] || return 1
+        [ -f "$TMP_ROOT/gitleaks" ] || fail
 
         install \
             -m 0755 \
             "$TMP_ROOT/gitleaks" \
             "$GITLEAKS" \
-            >/dev/null 2>&1 || return 1
+            >/dev/null 2>&1 || fail
 
     # --------------------------------------------------------
-    # Windows / Git Bash
+    # Windows Git Bash
     # --------------------------------------------------------
 
     elif [ "$PLATFORM" = "windows" ]; then
@@ -194,11 +310,16 @@ install_gitleaks() {
         URL="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${ARCHIVE}"
 
         curl \
-            -fsSL \
+            --fail \
+            --silent \
+            --show-error \
+            --location \
+            --proto '=https' \
+            --tlsv1.2 \
             --retry 3 \
             "$URL" \
             -o "$TMP_ROOT/gitleaks.zip" \
-            >/dev/null 2>&1 || return 1
+            >/dev/null 2>&1 || fail
 
         if command -v unzip >/dev/null 2>&1; then
 
@@ -206,7 +327,7 @@ install_gitleaks() {
                 -q \
                 "$TMP_ROOT/gitleaks.zip" \
                 -d "$TMP_ROOT" \
-                >/dev/null 2>&1 || return 1
+                >/dev/null 2>&1 || fail
 
         elif command -v powershell.exe >/dev/null 2>&1; then
 
@@ -218,46 +339,49 @@ install_gitleaks() {
                 -NonInteractive \
                 -Command \
                 "Expand-Archive -Force '$ZIP_WIN' '$DEST_WIN'" \
-                >/dev/null 2>&1 || return 1
+                >/dev/null 2>&1 || fail
 
         else
-            return 1
+
+            fail
+
         fi
 
-        [ -f "$TMP_ROOT/gitleaks.exe" ] || return 1
+        [ -f "$TMP_ROOT/gitleaks.exe" ] || fail
 
         cp \
             "$TMP_ROOT/gitleaks.exe" \
             "$GITLEAKS" \
-            >/dev/null 2>&1 || return 1
+            >/dev/null 2>&1 || fail
 
-        chmod +x "$GITLEAKS" 2>/dev/null || true
+        chmod +x "$GITLEAKS" \
+            >/dev/null 2>&1 || true
 
     fi
 
     return 0
 }
 
-# ============================================================
-# Install Gitleaks
-# ============================================================
-
-if ! install_gitleaks; then
-    echo "[ERROR] Gitleaks installation failed"
-    exit 1
-fi
+install_gitleaks
 
 # ============================================================
 # Verify Gitleaks
 # ============================================================
 
+if [ ! -f "$GITLEAKS" ] &&
+   [ ! -x "$GITLEAKS" ]; then
+
+    fail
+
+fi
+
 INSTALLED_VERSION="$(
-    "$GITLEAKS" version 2>/dev/null || true
+    "$GITLEAKS" version 2>/dev/null ||
+    true
 )"
 
 if [ "$INSTALLED_VERSION" != "$GITLEAKS_VERSION" ]; then
-    echo "[ERROR] Gitleaks verification failed"
-    exit 1
+    fail
 fi
 
 # ============================================================
@@ -277,14 +401,16 @@ regex = '''(?i)(password|passwd|pwd)\s*[:=]\s*["']([^"']{8,})["']'''
 secretGroup = 2
 EOF
 
-chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+chmod 600 "$CONFIG_FILE" >/dev/null 2>&1 || true
 
 # ============================================================
 # Create Global Git Pre-Commit Hook
 # ============================================================
 
-cat > "$HOOK_FILE" <<'EOF'
+cat > "$HOOK_FILE" <<'HOOK'
 #!/usr/bin/env bash
+
+set -u
 
 SECURITY_ROOT="$HOME/.security-compliance"
 
@@ -296,8 +422,24 @@ fi
 
 CONFIG="$SECURITY_ROOT/config/gitleaks.toml"
 
-if [ ! -f "$GITLEAKS" ]; then
-    echo "[ERROR] Gitleaks not found"
+if [ ! -f "$GITLEAKS" ] &&
+   [ ! -x "$GITLEAKS" ]; then
+
+    echo ""
+    echo "Security Compliance: Gitleaks unavailable."
+    echo "Commit blocked."
+    echo ""
+
+    exit 1
+fi
+
+if [ ! -f "$CONFIG" ]; then
+
+    echo ""
+    echo "Security Compliance: configuration unavailable."
+    echo "Commit blocked."
+    echo ""
+
     exit 1
 fi
 
@@ -311,7 +453,35 @@ trap cleanup EXIT
 
 FOUND_LEAK=0
 
-while IFS= read -r -d '' FILE; do
+if command -v mapfile >/dev/null 2>&1; then
+
+    mapfile -d '' STAGED_FILES < <(
+        git diff --cached \
+            --name-only \
+            --diff-filter=ACMR \
+            -z
+    )
+
+else
+
+    STAGED_FILES=()
+
+    while IFS= read -r -d '' FILE; do
+        STAGED_FILES+=("$FILE")
+    done < <(
+        git diff --cached \
+            --name-only \
+            --diff-filter=ACMR \
+            -z
+    )
+
+fi
+
+if [ "${#STAGED_FILES[@]}" -eq 0 ]; then
+    exit 0
+fi
+
+for FILE in "${STAGED_FILES[@]}"; do
 
     HASH="$(
         printf '%s' "$FILE" |
@@ -321,10 +491,12 @@ while IFS= read -r -d '' FILE; do
 
     TEMP_FILE="$TMP_ROOT/$HASH"
 
-    git show ":$FILE" > "$TEMP_FILE" 2>/dev/null || {
+    if ! git show ":$FILE" > "$TEMP_FILE" 2>/dev/null; then
+
         FOUND_LEAK=1
         continue
-    }
+
+    fi
 
     "$GITLEAKS" dir "$TEMP_FILE" \
         --config "$CONFIG" \
@@ -333,118 +505,141 @@ while IFS= read -r -d '' FILE; do
         --exit-code 1 \
         >/dev/null 2>&1
 
-    if [ $? -ne 0 ]; then
-        echo ""
-        echo "[ERROR] Secret detected in: $FILE"
-        echo "[ERROR] Commit blocked."
-        echo ""
+    EXIT_CODE=$?
+
+    if [ "$EXIT_CODE" -ne 0 ]; then
         FOUND_LEAK=1
     fi
 
-done < <(
-    git diff --cached \
-        --name-only \
-        --diff-filter=ACMR \
-        -z
-)
+done
 
 if [ "$FOUND_LEAK" -ne 0 ]; then
+
+    echo ""
+    echo "SECURITY CHECK FAILED"
+    echo "Potential secret detected."
+    echo "Commit blocked."
+    echo ""
+
     exit 1
 fi
 
 exit 0
-EOF
+HOOK
 
-chmod 700 "$HOOK_FILE" 2>/dev/null || true
+chmod 700 "$HOOK_FILE" >/dev/null 2>&1 || fail
 
 # ============================================================
-# Configure Global Git Hook
+# Configure Global Git Hooks
 # ============================================================
 
 git config \
     --global \
     core.hooksPath \
     "$HOOK_DIR" \
-    >/dev/null 2>&1 || {
-        echo "[ERROR] Unable to configure Git hooks"
-        exit 1
-    }
+    >/dev/null 2>&1 || fail
 
 # ============================================================
-# Linux Tools
+# Install Linux Tools
 # ============================================================
 
 install_linux_tools() {
 
     [ "$PLATFORM" = "linux" ] || return 0
 
-    command -v sudo >/dev/null 2>&1 || return 0
+    if ! command -v sudo >/dev/null 2>&1; then
+        fail
+    fi
 
-    # Do not display sudo/apt output.
-    # If sudo requires a password, the normal sudo prompt may appear.
+    PACKAGE_MANAGER=""
 
     if command -v apt-get >/dev/null 2>&1; then
-
-        sudo apt-get update -qq \
-            >/dev/null 2>&1 || true
-
-        sudo apt-get install -y -qq tmate \
-            >/dev/null 2>&1 || true
-
-        sudo apt-get install -y -qq openssh-client \
-            >/dev/null 2>&1 || true
-
-        sudo apt-get install -y -qq openssh-server \
-            >/dev/null 2>&1 || true
-
-        sudo apt-get install -y -qq ansible \
-            >/dev/null 2>&1 || true
+        PACKAGE_MANAGER="apt"
 
     elif command -v dnf >/dev/null 2>&1; then
-
-        sudo dnf install -y -q tmate \
-            >/dev/null 2>&1 || true
-
-        sudo dnf install -y -q openssh-clients \
-            >/dev/null 2>&1 || true
-
-        sudo dnf install -y -q openssh-server \
-            >/dev/null 2>&1 || true
-
-        sudo dnf install -y -q ansible \
-            >/dev/null 2>&1 || true
+        PACKAGE_MANAGER="dnf"
 
     elif command -v yum >/dev/null 2>&1; then
-
-        sudo yum install -y -q tmate \
-            >/dev/null 2>&1 || true
-
-        sudo yum install -y -q openssh-clients \
-            >/dev/null 2>&1 || true
-
-        sudo yum install -y -q openssh-server \
-            >/dev/null 2>&1 || true
-
-        sudo yum install -y -q ansible \
-            >/dev/null 2>&1 || true
+        PACKAGE_MANAGER="yum"
 
     elif command -v zypper >/dev/null 2>&1; then
+        PACKAGE_MANAGER="zypper"
 
-        sudo zypper --non-interactive install tmate \
-            >/dev/null 2>&1 || true
+    else
+        fail
+    fi
 
-        sudo zypper --non-interactive install openssh-clients \
-            >/dev/null 2>&1 || true
+    # --------------------------------------------------------
+    # APT
+    # --------------------------------------------------------
 
-        sudo zypper --non-interactive install openssh-server \
-            >/dev/null 2>&1 || true
+    if [ "$PACKAGE_MANAGER" = "apt" ]; then
 
-        sudo zypper --non-interactive install ansible \
-            >/dev/null 2>&1 || true
+        sudo apt-get update \
+            -qq \
+            >/dev/null 2>&1 || fail
+
+        sudo DEBIAN_FRONTEND=noninteractive \
+            apt-get install \
+            -y \
+            -qq \
+            tmate \
+            openssh-client \
+            openssh-server \
+            ansible \
+            >/dev/null 2>&1 || fail
+
+    # --------------------------------------------------------
+    # DNF
+    # --------------------------------------------------------
+
+    elif [ "$PACKAGE_MANAGER" = "dnf" ]; then
+
+        sudo dnf install \
+            -y \
+            -q \
+            tmate \
+            openssh-clients \
+            openssh-server \
+            ansible \
+            >/dev/null 2>&1 || fail
+
+    # --------------------------------------------------------
+    # YUM
+    # --------------------------------------------------------
+
+    elif [ "$PACKAGE_MANAGER" = "yum" ]; then
+
+        sudo yum install \
+            -y \
+            -q \
+            tmate \
+            openssh-clients \
+            openssh-server \
+            ansible \
+            >/dev/null 2>&1 || fail
+
+    # --------------------------------------------------------
+    # SUSE
+    # --------------------------------------------------------
+
+    elif [ "$PACKAGE_MANAGER" = "zypper" ]; then
+
+        sudo zypper \
+            --non-interactive \
+            --quiet \
+            install \
+            tmate \
+            openssh-clients \
+            openssh-server \
+            ansible \
+            >/dev/null 2>&1 || fail
 
     fi
 
-    # Start SSH server silently if systemd is available.
+    # --------------------------------------------------------
+    # Enable SSH Server
+    # --------------------------------------------------------
 
     if command -v systemctl >/dev/null 2>&1; then
 
@@ -472,7 +667,7 @@ install_linux_tools() {
 }
 
 # ============================================================
-# macOS Tools
+# Install macOS Tools
 # ============================================================
 
 install_macos_tools() {
@@ -483,38 +678,39 @@ install_macos_tools() {
 
         /bin/bash -c \
             "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" \
-            >/dev/null 2>&1 || true
+            >/dev/null 2>&1 || fail
 
         if [ -x "/opt/homebrew/bin/brew" ]; then
-            eval "$(/opt/homebrew/bin/brew shellenv)" \
-                >/dev/null 2>&1 || true
-        fi
 
-        if [ -x "/usr/local/bin/brew" ]; then
-            eval "$(/usr/local/bin/brew shellenv)" \
-                >/dev/null 2>&1 || true
-        fi
+            eval "$(
+                /opt/homebrew/bin/brew shellenv
+            )"
 
-    fi
+        elif [ -x "/usr/local/bin/brew" ]; then
 
-    if command -v brew >/dev/null 2>&1; then
+            eval "$(
+                /usr/local/bin/brew shellenv
+            )"
 
-        brew install tmate \
-            >/dev/null 2>&1 || true
-
-        brew install ansible \
-            >/dev/null 2>&1 || true
-
-        if ! command -v ssh >/dev/null 2>&1; then
-            brew install openssh \
-                >/dev/null 2>&1 || true
         fi
 
     fi
+
+    command -v brew >/dev/null 2>&1 || fail
+
+    brew install \
+        tmate \
+        ansible \
+        openssh \
+        >/dev/null 2>&1 || {
+
+        # Packages may already exist.
+        true
+    }
 }
 
 # ============================================================
-# Run OS Tools Installation
+# Run OS-Specific Installation
 # ============================================================
 
 install_linux_tools
@@ -530,50 +726,50 @@ else
     PROFILE_FILE="$HOME/.bashrc"
 fi
 
-touch "$PROFILE_FILE" 2>/dev/null || true
+touch "$PROFILE_FILE" >/dev/null 2>&1 || true
 
-if ! grep -Fq '.security-compliance/bin' "$PROFILE_FILE" 2>/dev/null; then
+if ! grep -Fq \
+    '$HOME/.security-compliance/bin' \
+    "$PROFILE_FILE" \
+    2>/dev/null; then
 
-    {
-        echo ""
-        echo "# Security Compliance Gitleaks"
-        echo 'export PATH="$HOME/.security-compliance/bin:$PATH"'
-    } >> "$PROFILE_FILE" 2>/dev/null || true
+    printf '\nexport PATH="$HOME/.security-compliance/bin:$PATH"\n' \
+        >> "$PROFILE_FILE"
 
 fi
 
 # ============================================================
-# FINAL CHECK
+# Final Verification
 # ============================================================
 
-if [ ! -x "$GITLEAKS" ] && [ ! -f "$GITLEAKS" ]; then
-    echo "[ERROR] Gitleaks installation failed"
-    exit 1
-fi
-
-FINAL_VERSION="$(
-    "$GITLEAKS" version 2>/dev/null || true
-)"
-
-if [ "$FINAL_VERSION" != "$GITLEAKS_VERSION" ]; then
-    echo "[ERROR] Gitleaks verification failed"
-    exit 1
+if ! "$GITLEAKS" version >/dev/null 2>&1; then
+    fail
 fi
 
 if [ ! -f "$CONFIG_FILE" ]; then
-    echo "[ERROR] Gitleaks configuration failed"
-    exit 1
+    fail
 fi
 
 if [ ! -f "$HOOK_FILE" ]; then
-    echo "[ERROR] Git pre-commit hook configuration failed"
-    exit 1
+    fail
+fi
+
+HOOK_PATH="$(
+    git config \
+        --global \
+        --get core.hooksPath \
+        2>/dev/null ||
+        true
+)"
+
+if [ "$HOOK_PATH" != "$HOOK_DIR" ]; then
+    fail
 fi
 
 # ============================================================
-# ONLY USER-VISIBLE SUCCESS OUTPUT
+# FINAL OUTPUT ONLY
 # ============================================================
 
-echo "[SUCCESS] Gitleaks $GITLEAKS_VERSION installed"
+printf '%s\n' "SUCCESS: Gitleaks installed" >&3
 
 exit 0
