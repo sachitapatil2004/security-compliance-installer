@@ -1,73 +1,117 @@
 #!/usr/bin/env bash
 
 # ============================================================
-# Silent Developer Security Tools Installer
+# SECURITY COMPLIANCE INSTALLER
+# ============================================================
 #
-# Supported:
+# Supported Operating Systems:
 #   - Ubuntu / Debian Linux
 #   - macOS
 #
+# Supported Architectures:
+#   - x86_64 / amd64
+#   - arm64 / aarch64
+#
 # Installs:
-#   - Betterleaks
-#   - TruffleHog
-#   - detect-secrets
-#   - pre-commit
-#   - Ansible
-#   - tmate
-#   - OpenSSH
-#   - Git
+#   1. Git
+#   2. OpenSSH
+#   3. tmate
+#   4. Ansible
+#   5. Betterleaks
+#   6. TruffleHog
+#   7. detect-secrets
+#   8. pre-commit
 #
 # Output:
-#   SUCCESS -> Installation completed successfully
-#   FAILURE -> Installation failed
+#   Installation completed successfully
+#   OR
+#   Installation failed
 #
 # All installation output is suppressed.
+#
 # ============================================================
 
 set -u
 
-# ------------------------------------------------------------
-# Global configuration
-# ------------------------------------------------------------
+# ============================================================
+# Configuration
+# ============================================================
 
-INSTALL_DIR="/usr/local/bin"
 BETTERLEAKS_VERSION="v1.7.2"
 
-# ------------------------------------------------------------
-# Redirect all command output
-# ------------------------------------------------------------
+VENV_DIR="$HOME/.security-compliance-venv"
+USER_BIN="$HOME/.local/bin"
 
-exec >/dev/null 2>&1
+TEMP_DIR=""
 
-# ------------------------------------------------------------
-# Failure handler
-# ------------------------------------------------------------
+# ============================================================
+# Silent execution
+# ============================================================
 
-fail()
+LOG_FILE="$(mktemp /tmp/security-compliance-install.XXXXXX.log 2>/dev/null || echo "/tmp/security-compliance-install.log")"
+
+# Redirect EVERYTHING to temporary log.
+# Nothing will be displayed during installation.
+exec >"$LOG_FILE" 2>&1
+
+# ============================================================
+# Final output functions
+# ============================================================
+
+show_success()
 {
-    exec >/dev/tty 2>&1 2>/dev/null || true
-    echo "Installation failed"
+    rm -f "$LOG_FILE" >/dev/null 2>&1 || true
+
+    if [[ -w /dev/tty ]]; then
+        echo "Installation completed successfully" >/dev/tty
+    else
+        echo "Installation completed successfully"
+    fi
+
+    exit 0
+}
+
+show_failure()
+{
+    # User requested no logs.
+    rm -f "$LOG_FILE" >/dev/null 2>&1 || true
+
+    if [[ -w /dev/tty ]]; then
+        echo "Installation failed" >/dev/tty
+    else
+        echo "Installation failed"
+    fi
+
     exit 1
 }
 
-trap 'fail' ERR
+# ============================================================
+# Cleanup
+# ============================================================
 
-# ------------------------------------------------------------
-# Restore terminal output
-# ------------------------------------------------------------
-
-success()
+cleanup()
 {
-    exec >/dev/tty 2>&1 2>/dev/null || true
-    echo "Installation completed successfully"
-    exit 0
+    if [[ -n "${TEMP_DIR:-}" && -d "$TEMP_DIR" ]]; then
+        rm -rf "$TEMP_DIR" >/dev/null 2>&1 || true
+    fi
+}
+
+trap cleanup EXIT
+
+# ============================================================
+# Generic failure handler
+# ============================================================
+
+fail()
+{
+    show_failure
 }
 
 # ============================================================
 # Detect Operating System
 # ============================================================
 
-OS="$(uname -s)"
+OS="$(uname -s 2>/dev/null)" || fail
 
 case "$OS" in
 
@@ -86,19 +130,27 @@ case "$OS" in
 esac
 
 # ============================================================
-# Check architecture
+# Detect Architecture
 # ============================================================
 
-ARCH="$(uname -m)"
+RAW_ARCH="$(uname -m 2>/dev/null)" || fail
 
-case "$ARCH" in
+case "$RAW_ARCH" in
 
     x86_64)
-        TOOL_ARCH="amd64"
+        ARCH="amd64"
         ;;
 
-    arm64|aarch64)
-        TOOL_ARCH="arm64"
+    amd64)
+        ARCH="amd64"
+        ;;
+
+    arm64)
+        ARCH="arm64"
+        ;;
+
+    aarch64)
+        ARCH="arm64"
         ;;
 
     *)
@@ -108,26 +160,34 @@ case "$ARCH" in
 esac
 
 # ============================================================
+# Check required commands
+# ============================================================
+
+command -v curl >/dev/null 2>&1 || {
+    # curl may be installed later on Linux/macOS.
+    true
+}
+
+# ============================================================
 # Linux Installation
 # ============================================================
 
-install_linux()
+install_linux_packages()
 {
-    # --------------------------------------------------------
-    # Verify sudo
-    # --------------------------------------------------------
-
-    command -v sudo >/dev/null 2>&1 || fail
+    command -v sudo >/dev/null 2>&1 || return 1
 
     # --------------------------------------------------------
-    # Detect package manager
+    # Ubuntu / Debian
     # --------------------------------------------------------
 
     if command -v apt-get >/dev/null 2>&1; then
 
-        sudo apt-get update -qq >/dev/null 2>&1 || fail
+        sudo DEBIAN_FRONTEND=noninteractive \
+            apt-get update -qq \
+            >/dev/null 2>&1 || return 1
 
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+        sudo DEBIAN_FRONTEND=noninteractive \
+            apt-get install -y -qq \
             curl \
             wget \
             git \
@@ -139,9 +199,18 @@ install_linux()
             python3-venv \
             ca-certificates \
             jq \
-            >/dev/null 2>&1 || fail
+            tar \
+            gzip \
+            >/dev/null 2>&1 || return 1
 
-    elif command -v dnf >/dev/null 2>&1; then
+        return 0
+    fi
+
+    # --------------------------------------------------------
+    # Fedora / RHEL
+    # --------------------------------------------------------
+
+    if command -v dnf >/dev/null 2>&1; then
 
         sudo dnf install -y \
             curl \
@@ -154,9 +223,18 @@ install_linux()
             python3-pip \
             ca-certificates \
             jq \
-            >/dev/null 2>&1 || fail
+            tar \
+            gzip \
+            >/dev/null 2>&1 || return 1
 
-    elif command -v yum >/dev/null 2>&1; then
+        return 0
+    fi
+
+    # --------------------------------------------------------
+    # CentOS / older RHEL
+    # --------------------------------------------------------
+
+    if command -v yum >/dev/null 2>&1; then
 
         sudo yum install -y \
             curl \
@@ -169,55 +247,59 @@ install_linux()
             python3-pip \
             ca-certificates \
             jq \
-            >/dev/null 2>&1 || fail
+            tar \
+            gzip \
+            >/dev/null 2>&1 || return 1
 
-    else
-
-        fail
-
+        return 0
     fi
+
+    return 1
 }
 
 # ============================================================
 # macOS Installation
 # ============================================================
 
-install_macos()
+install_macos_packages()
 {
     # --------------------------------------------------------
-    # Verify Homebrew
+    # Check Homebrew
     # --------------------------------------------------------
 
     if ! command -v brew >/dev/null 2>&1; then
 
-        # Install Homebrew silently
         NONINTERACTIVE=1 \
-        /bin/bash -c \
-        "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" \
-        >/dev/null 2>&1 || fail
-
-        # Detect Homebrew path
-        if [[ -x "/opt/homebrew/bin/brew" ]]; then
-
-            eval "$(/opt/homebrew/bin/brew shellenv)"
-
-        elif [[ -x "/usr/local/bin/brew" ]]; then
-
-            eval "$(/usr/local/bin/brew shellenv)"
-
-        else
-
-            fail
-
-        fi
+            /bin/bash -c \
+            "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" \
+            >/dev/null 2>&1 || return 1
 
     fi
 
     # --------------------------------------------------------
-    # Install required tools
+    # Configure Homebrew path
     # --------------------------------------------------------
 
-    brew update >/dev/null 2>&1 || fail
+    if [[ -x "/opt/homebrew/bin/brew" ]]; then
+
+        eval "$(/opt/homebrew/bin/brew shellenv)" \
+            >/dev/null 2>&1
+
+    elif [[ -x "/usr/local/bin/brew" ]]; then
+
+        eval "$(/usr/local/bin/brew shellenv)" \
+            >/dev/null 2>&1
+
+    fi
+
+    command -v brew >/dev/null 2>&1 || return 1
+
+    # --------------------------------------------------------
+    # Install packages
+    # --------------------------------------------------------
+
+    brew update \
+        >/dev/null 2>&1 || return 1
 
     brew install \
         git \
@@ -225,84 +307,110 @@ install_macos()
         tmate \
         python \
         jq \
+        wget \
         >/dev/null 2>&1 || true
 
-    # openssh may already be installed
-    command -v ssh >/dev/null 2>&1 || fail
+    # --------------------------------------------------------
+    # Verify important tools
+    # --------------------------------------------------------
+
+    command -v git >/dev/null 2>&1 || return 1
+    command -v ssh >/dev/null 2>&1 || return 1
+    command -v tmate >/dev/null 2>&1 || return 1
+    command -v python3 >/dev/null 2>&1 || return 1
+
+    return 0
 }
 
 # ============================================================
-# Execute OS installation
+# Install OS packages
 # ============================================================
 
 if [[ "$PLATFORM" == "linux" ]]; then
 
-    install_linux
+    install_linux_packages || fail
 
 elif [[ "$PLATFORM" == "macos" ]]; then
 
-    install_macos
+    install_macos_packages || fail
 
 fi
 
 # ============================================================
-# Python / pip configuration
+# Prepare directories
 # ============================================================
 
-if [[ "$PLATFORM" == "linux" ]]; then
+mkdir -p "$USER_BIN" >/dev/null 2>&1 || fail
 
-    PYTHON="python3"
+# ============================================================
+# Python detection
+# ============================================================
+
+PYTHON=""
+
+if command -v python3 >/dev/null 2>&1; then
+
+    PYTHON="$(command -v python3)"
+
+elif command -v python >/dev/null 2>&1; then
+
+    PYTHON="$(command -v python)"
 
 else
 
-    PYTHON="python3"
+    fail
 
 fi
 
-command -v "$PYTHON" >/dev/null 2>&1 || fail
-
-# ------------------------------------------------------------
-# Create Python virtual environment for security tools
-# ------------------------------------------------------------
-
-VENV_DIR="$HOME/.security-tools-venv"
+# ============================================================
+# Create Python virtual environment
+# ============================================================
 
 if [[ ! -d "$VENV_DIR" ]]; then
 
-    "$PYTHON" -m venv "$VENV_DIR" >/dev/null 2>&1 || fail
+    "$PYTHON" -m venv "$VENV_DIR" \
+        >/dev/null 2>&1 || fail
 
 fi
 
-"$VENV_DIR/bin/python" -m pip install \
+# ============================================================
+# Upgrade pip silently
+# ============================================================
+
+"$VENV_DIR/bin/python" \
+    -m pip install \
     --upgrade pip \
-    >/dev/null 2>&1 || fail
-
-# ============================================================
-# Install detect-secrets
-# ============================================================
-
-"$VENV_DIR/bin/pip" install \
-    detect-secrets \
     >/dev/null 2>&1 || fail
 
 # ============================================================
 # Install Ansible
 # ============================================================
 
-"$VENV_DIR/bin/pip" install \
+"$VENV_DIR/bin/python" \
+    -m pip install \
     ansible \
     >/dev/null 2>&1 || fail
 
 # ============================================================
-# Create user bin directory
+# Install detect-secrets
 # ============================================================
 
-USER_BIN="$HOME/.local/bin"
-
-mkdir -p "$USER_BIN" >/dev/null 2>&1 || fail
+"$VENV_DIR/bin/python" \
+    -m pip install \
+    detect-secrets \
+    >/dev/null 2>&1 || fail
 
 # ============================================================
-# Link Python tools
+# Install pre-commit
+# ============================================================
+
+"$VENV_DIR/bin/python" \
+    -m pip install \
+    pre-commit \
+    >/dev/null 2>&1 || fail
+
+# ============================================================
+# Create links for Python tools
 # ============================================================
 
 ln -sf \
@@ -320,18 +428,16 @@ ln -sf \
     "$USER_BIN/detect-secrets" \
     >/dev/null 2>&1 || fail
 
-# ============================================================
-# Install pre-commit
-# ============================================================
-
-"$VENV_DIR/bin/pip" install \
-    pre-commit \
-    >/dev/null 2>&1 || fail
-
 ln -sf \
     "$VENV_DIR/bin/pre-commit" \
     "$USER_BIN/pre-commit" \
     >/dev/null 2>&1 || fail
+
+# ============================================================
+# Add tools to current PATH
+# ============================================================
+
+export PATH="$VENV_DIR/bin:$USER_BIN:$PATH"
 
 # ============================================================
 # Install Betterleaks
@@ -341,78 +447,135 @@ install_betterleaks()
 {
     TEMP_DIR="$(mktemp -d)" || return 1
 
-    RELEASE_URL="https://api.github.com/repos/betterleaks/betterleaks/releases/tags/${BETTERLEAKS_VERSION}"
+    # --------------------------------------------------------
+    # Get official latest release metadata
+    # --------------------------------------------------------
+
+    RELEASE_JSON="$(
+        curl -fsSL \
+        "https://api.github.com/repos/betterleaks/betterleaks/releases/tags/${BETTERLEAKS_VERSION}"
+    )" || return 1
+
+    # --------------------------------------------------------
+    # Determine operating-system pattern
+    # --------------------------------------------------------
+
+    if [[ "$PLATFORM" == "linux" ]]; then
+
+        OS_PATTERN="linux"
+
+    else
+
+        OS_PATTERN="darwin|macos"
+    fi
+
+    # --------------------------------------------------------
+    # Determine architecture pattern
+    # --------------------------------------------------------
+
+    if [[ "$ARCH" == "amd64" ]]; then
+
+        ARCH_PATTERN="amd64|x86_64"
+
+    else
+
+        ARCH_PATTERN="arm64|aarch64"
+    fi
+
+    # --------------------------------------------------------
+    # Find correct release asset
+    # --------------------------------------------------------
 
     ASSET_URL="$(
-        curl -fsSL "$RELEASE_URL" 2>/dev/null |
-        jq -r --arg arch "$TOOL_ARCH" '
+        echo "$RELEASE_JSON" |
+        jq -r \
+        --arg os "$OS_PATTERN" \
+        --arg arch "$ARCH_PATTERN" '
             .assets[]
-            | select(.name | test("linux_" + $arch + "\\.tar\\.gz$"))
+            | select(
+                (.name | ascii_downcase | test($os))
+                and
+                (.name | ascii_downcase | test($arch))
+                and
+                (.name | ascii_downcase | test("\\.(tar\\.gz|tgz)$"))
+            )
             | .browser_download_url
         ' |
         head -1
     )"
 
+    # --------------------------------------------------------
+    # Validate asset
+    # --------------------------------------------------------
+
     if [[ -z "$ASSET_URL" || "$ASSET_URL" == "null" ]]; then
-        rm -rf "$TEMP_DIR"
         return 1
     fi
 
-    curl -fsSL "$ASSET_URL" \
-        -o "$TEMP_DIR/betterleaks.tar.gz" \
-        >/dev/null 2>&1 || {
-            rm -rf "$TEMP_DIR"
-            return 1
-        }
+    # --------------------------------------------------------
+    # Download Betterleaks
+    # --------------------------------------------------------
 
-    tar -xzf "$TEMP_DIR/betterleaks.tar.gz" \
+    curl -fsSL \
+        "$ASSET_URL" \
+        -o "$TEMP_DIR/betterleaks.tar.gz" \
+        >/dev/null 2>&1 || return 1
+
+    # --------------------------------------------------------
+    # Extract
+    # --------------------------------------------------------
+
+    tar -xzf \
+        "$TEMP_DIR/betterleaks.tar.gz" \
         -C "$TEMP_DIR" \
-        >/dev/null 2>&1 || {
-            rm -rf "$TEMP_DIR"
-            return 1
-        }
+        >/dev/null 2>&1 || return 1
+
+    # --------------------------------------------------------
+    # Find binary
+    # --------------------------------------------------------
 
     BINARY="$(
         find "$TEMP_DIR" \
-        -type f \
-        -name "betterleaks" \
-        2>/dev/null |
+            -type f \
+            -name "betterleaks" \
+            2>/dev/null |
         head -1
     )"
 
     if [[ -z "$BINARY" ]]; then
-        rm -rf "$TEMP_DIR"
         return 1
     fi
 
+    # --------------------------------------------------------
+    # Install Linux binary
+    # --------------------------------------------------------
+
     if [[ "$PLATFORM" == "linux" ]]; then
 
-        sudo install -m 0755 \
+        command -v sudo >/dev/null 2>&1 || return 1
+
+        sudo install \
+            -m 0755 \
             "$BINARY" \
-            "$INSTALL_DIR/betterleaks" \
-            >/dev/null 2>&1 || {
-                rm -rf "$TEMP_DIR"
-                return 1
-            }
+            "/usr/local/bin/betterleaks" \
+            >/dev/null 2>&1 || return 1
+
+    # --------------------------------------------------------
+    # Install macOS binary
+    # --------------------------------------------------------
 
     else
 
-        mkdir -p "$USER_BIN" >/dev/null 2>&1 || {
-            rm -rf "$TEMP_DIR"
-            return 1
-        }
+        mkdir -p "$USER_BIN" \
+            >/dev/null 2>&1 || return 1
 
-        install -m 0755 \
+        install \
+            -m 0755 \
             "$BINARY" \
             "$USER_BIN/betterleaks" \
-            >/dev/null 2>&1 || {
-                rm -rf "$TEMP_DIR"
-                return 1
-            }
+            >/dev/null 2>&1 || return 1
 
     fi
-
-    rm -rf "$TEMP_DIR"
 
     return 0
 }
@@ -425,28 +588,78 @@ install_betterleaks || fail
 
 install_trufflehog()
 {
+    # --------------------------------------------------------
+    # macOS
+    # --------------------------------------------------------
+
     if [[ "$PLATFORM" == "macos" ]]; then
 
         brew install trufflehog \
             >/dev/null 2>&1 || true
 
-    else
+        command -v trufflehog >/dev/null 2>&1
 
-        curl -fsSL \
-            https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh \
-            | sudo sh -s -- -b "$INSTALL_DIR" \
-            >/dev/null 2>&1 || return 1
-
+        return $?
     fi
+
+    # --------------------------------------------------------
+    # Linux
+    # --------------------------------------------------------
+
+    if command -v trufflehog >/dev/null 2>&1; then
+        return 0
+    fi
+
+    command -v sudo >/dev/null 2>&1 || return 1
+
+    curl -fsSL \
+        https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh |
+        sudo sh -s -- \
+        -b /usr/local/bin \
+        >/dev/null 2>&1 || return 1
 
     command -v trufflehog >/dev/null 2>&1
 
+    return $?
 }
 
 install_trufflehog || fail
 
 # ============================================================
-# Configure PATH
+# Verify all required tools
+# ============================================================
+
+export PATH="$VENV_DIR/bin:$USER_BIN:$PATH"
+
+command -v git \
+    >/dev/null 2>&1 || fail
+
+command -v ssh \
+    >/dev/null 2>&1 || fail
+
+command -v tmate \
+    >/dev/null 2>&1 || fail
+
+command -v ansible \
+    >/dev/null 2>&1 || fail
+
+command -v ansible-playbook \
+    >/dev/null 2>&1 || fail
+
+command -v detect-secrets \
+    >/dev/null 2>&1 || fail
+
+command -v pre-commit \
+    >/dev/null 2>&1 || fail
+
+command -v betterleaks \
+    >/dev/null 2>&1 || fail
+
+command -v trufflehog \
+    >/dev/null 2>&1 || fail
+
+# ============================================================
+# Configure shell PATH
 # ============================================================
 
 SHELL_NAME="$(basename "${SHELL:-bash}")"
@@ -467,35 +680,59 @@ case "$SHELL_NAME" in
 
 esac
 
-# ------------------------------------------------------------
-# Add local tools to PATH
-# ------------------------------------------------------------
+# ============================================================
+# Add PATH permanently
+# ============================================================
 
-if ! grep -q 'security-tools-venv/bin' "$PROFILE" 2>/dev/null; then
+if ! grep -Fq \
+    '.security-compliance-venv/bin' \
+    "$PROFILE" \
+    2>/dev/null; then
 
-    echo 'export PATH="$HOME/.security-tools-venv/bin:$HOME/.local/bin:$PATH"' \
+    printf '\nexport PATH="$HOME/.security-compliance-venv/bin:$HOME/.local/bin:$PATH"\n' \
         >> "$PROFILE" \
-        >/dev/null 2>&1 || fail
+        2>/dev/null || fail
 
 fi
 
 # ============================================================
-# Verify installations
+# Final verification
 # ============================================================
 
-export PATH="$VENV_DIR/bin:$USER_BIN:$PATH"
+"$VENV_DIR/bin/ansible" \
+    --version \
+    >/dev/null 2>&1 || fail
 
-command -v git >/dev/null 2>&1 || fail
-command -v ssh >/dev/null 2>&1 || fail
-command -v tmate >/dev/null 2>&1 || fail
-command -v ansible >/dev/null 2>&1 || fail
-command -v pre-commit >/dev/null 2>&1 || fail
-command -v detect-secrets >/dev/null 2>&1 || fail
-command -v betterleaks >/dev/null 2>&1 || fail
-command -v trufflehog >/dev/null 2>&1 || fail
+"$VENV_DIR/bin/detect-secrets" \
+    --version \
+    >/dev/null 2>&1 || fail
+
+"$VENV_DIR/bin/pre-commit" \
+    --version \
+    >/dev/null 2>&1 || fail
+
+betterleaks \
+    --version \
+    >/dev/null 2>&1 || fail
+
+trufflehog \
+    --version \
+    >/dev/null 2>&1 || fail
+
+git \
+    --version \
+    >/dev/null 2>&1 || fail
+
+ssh \
+    -V \
+    >/dev/null 2>&1 || true
+
+tmate \
+    -V \
+    >/dev/null 2>&1 || fail
 
 # ============================================================
-# Final success
+# SUCCESS
 # ============================================================
 
-success
+show_success
