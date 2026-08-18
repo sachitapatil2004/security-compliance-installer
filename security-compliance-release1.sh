@@ -1,640 +1,846 @@
 #!/usr/bin/env bash
 
+set -Eeuo pipefail
+
 # ============================================================
-# Security Compliance Installer
+# COMPLETE SECRET SECURITY SETUP
+# ============================================================
 #
-# Supported:
-#   Linux
-#   macOS
-#   Windows through Git Bash
+# Security layers:
 #
-# Installs:
-#   - Gitleaks 8.30.0
-#   - Global Git pre-commit secret scanning
-#   - tmate
-#   - Ansible
-#   - OpenSSH client
-#   - OpenSSH server on Linux
+# 1. Betterleaks
+#       - Local secret detection
 #
-# Terminal output:
-#   SUCCESS: Gitleaks installed
+# 2. detect-secrets
+#       - Baseline management
+#       - New secret detection
+#
+# 3. Pre-commit
+#       - Blocks commits containing secrets
+#
+# 4. TruffleHog
+#       - Deep repository scanning
+#       - Credential verification
+#       - GitHub Actions
+#
+# 5. GitHub Secret Scanning
+#       - Server-side repository protection
+#
+# 6. GitHub Push Protection
+#       - Prevents supported secrets from being pushed
+#
+# Supported source types:
+#
+# Python, Java, JavaScript, TypeScript, TSX, JSX,
+# Node.js, PHP, C, C++, Go, Ruby, Shell, YAML, JSON,
+# Dockerfiles, .env, Terraform, Kubernetes manifests, etc.
+#
 # ============================================================
 
-set -u
+set -o pipefail
 
-GITLEAKS_VERSION="8.30.0"
+# ------------------------------------------------------------
+# Configuration
+# ------------------------------------------------------------
 
-INSTALL_ROOT="$HOME/.security-compliance"
-BIN_DIR="$INSTALL_ROOT/bin"
-CONFIG_DIR="$INSTALL_ROOT/config"
-HOOK_DIR="$HOME/.git-hooks"
+INSTALL_DIR="/usr/local/bin"
 
-GITLEAKS_CONFIG="$CONFIG_DIR/gitleaks.toml"
-HOOK_FILE="$HOOK_DIR/pre-commit"
+PROJECT_DIR="$(pwd)"
 
-TMP_DIR=""
+PRE_COMMIT_CONFIG=".pre-commit-config.yaml"
+SECRETS_BASELINE=".secrets.baseline"
 
-# ============================================================
-# Silent logging
-# ============================================================
+BETTERLEAKS_VERSION="v1.7.2"
 
-LOG_FILE="/tmp/security-compliance-install.log"
+GITHUB_WORKFLOW_DIR=".github/workflows"
+GITHUB_WORKFLOW_FILE="${GITHUB_WORKFLOW_DIR}/secret-security.yml"
 
-exec >"$LOG_FILE" 2>&1
+LOG_FILE="/tmp/secret-security-setup.log"
 
-# ============================================================
-# Cleanup
-# ============================================================
+# ------------------------------------------------------------
+# Colors
+# ------------------------------------------------------------
 
-cleanup() {
-    if [ -n "${TMP_DIR:-}" ] && [ -d "$TMP_DIR" ]; then
-        rm -rf "$TMP_DIR"
-    fi
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+# ------------------------------------------------------------
+# Logging functions
+# ------------------------------------------------------------
+
+log() {
+    echo -e "${BLUE}[INFO]${NC} $1"
 }
 
-trap cleanup EXIT
+success() {
+    echo -e "${GREEN}[OK]${NC} $1"
+}
+
+warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
+}
+
+error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+# ------------------------------------------------------------
+# Error handler
+# ------------------------------------------------------------
+
+trap 'error "Setup failed at line $LINENO. Check $LOG_FILE for details."' ERR
+
+exec > >(tee -a "$LOG_FILE") 2>&1
 
 # ============================================================
-# Failure Handler
+# START
 # ============================================================
 
-fail_installation() {
-    echo "FAILED" >> "$LOG_FILE"
-    echo "FAILED: Security Compliance installation"
+echo ""
+echo "============================================================"
+echo "        COMPLETE SECRET SECURITY SETUP"
+echo "============================================================"
+echo ""
+
+log "Project directory: $PROJECT_DIR"
+
+# ============================================================
+# 1. Check Linux
+# ============================================================
+
+if [[ "$OSTYPE" != "linux-gnu"* ]]; then
+    error "This version of the script supports Linux/Ubuntu."
+    error "Use the Windows PowerShell version for Windows machines."
     exit 1
-}
+fi
+
+success "Linux detected."
 
 # ============================================================
-# Detect OS
+# 2. Check architecture
 # ============================================================
 
-OS="$(uname -s 2>/dev/null || true)"
-ARCH="$(uname -m 2>/dev/null || true)"
+RAW_ARCH="$(uname -m)"
 
-case "$OS" in
-
-    Linux*)
-        PLATFORM="linux"
+case "$RAW_ARCH" in
+    x86_64)
+        ARCH="amd64"
         ;;
-
-    Darwin*)
-        PLATFORM="macos"
+    aarch64|arm64)
+        ARCH="arm64"
         ;;
-
-    MINGW*|MSYS*|CYGWIN*)
-        PLATFORM="windows"
-        ;;
-
     *)
-        fail_installation
+        error "Unsupported architecture: $RAW_ARCH"
+        exit 1
         ;;
-
 esac
 
-# ============================================================
-# Detect Architecture
-# ============================================================
-
-case "$ARCH" in
-
-    x86_64|amd64)
-        GITLEAKS_ARCH="x64"
-        ;;
-
-    arm64|aarch64)
-        GITLEAKS_ARCH="arm64"
-        ;;
-
-    *)
-        fail_installation
-        ;;
-
-esac
+log "Architecture: $ARCH"
 
 # ============================================================
-# Check required commands
+# 3. Check sudo
 # ============================================================
 
-if ! command -v git >/dev/null 2>&1; then
-    fail_installation
-fi
-
-if ! command -v curl >/dev/null 2>&1; then
-    fail_installation
-fi
-
-# ============================================================
-# Create directories
-# ============================================================
-
-mkdir -p "$BIN_DIR" || fail_installation
-mkdir -p "$CONFIG_DIR" || fail_installation
-mkdir -p "$HOOK_DIR" || fail_installation
-
-# ============================================================
-# Gitleaks path
-# ============================================================
-
-if [ "$PLATFORM" = "windows" ]; then
-    GITLEAKS="$BIN_DIR/gitleaks.exe"
-else
-    GITLEAKS="$BIN_DIR/gitleaks"
-fi
-
-export PATH="$BIN_DIR:$PATH"
-
-# ============================================================
-# Install Gitleaks
-# ============================================================
-
-install_gitleaks() {
-
-    CURRENT_VERSION=""
-
-    if [ -f "$GITLEAKS" ] || [ -x "$GITLEAKS" ]; then
-        CURRENT_VERSION="$(
-            "$GITLEAKS" version 2>/dev/null || true
-        )"
-    fi
-
-    if [ "$CURRENT_VERSION" = "$GITLEAKS_VERSION" ]; then
-        return 0
-    fi
-
-    TMP_DIR="$(mktemp -d)" || return 1
-
-    # --------------------------------------------------------
-    # Linux
-    # --------------------------------------------------------
-
-    if [ "$PLATFORM" = "linux" ]; then
-
-        FILE="gitleaks_${GITLEAKS_VERSION}_linux_${GITLEAKS_ARCH}.tar.gz"
-
-        URL="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${FILE}"
-
-        curl \
-            -fsSL \
-            --retry 3 \
-            "$URL" \
-            -o "$TMP_DIR/gitleaks.tar.gz" \
-            >>"$LOG_FILE" 2>&1 || return 1
-
-        tar \
-            -xzf "$TMP_DIR/gitleaks.tar.gz" \
-            -C "$TMP_DIR" \
-            >>"$LOG_FILE" 2>&1 || return 1
-
-        [ -f "$TMP_DIR/gitleaks" ] || return 1
-
-        install \
-            -m 0755 \
-            "$TMP_DIR/gitleaks" \
-            "$GITLEAKS" \
-            >>"$LOG_FILE" 2>&1 || return 1
-
-    # --------------------------------------------------------
-    # macOS
-    # --------------------------------------------------------
-
-    elif [ "$PLATFORM" = "macos" ]; then
-
-        FILE="gitleaks_${GITLEAKS_VERSION}_darwin_${GITLEAKS_ARCH}.tar.gz"
-
-        URL="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${FILE}"
-
-        curl \
-            -fsSL \
-            --retry 3 \
-            "$URL" \
-            -o "$TMP_DIR/gitleaks.tar.gz" \
-            >>"$LOG_FILE" 2>&1 || return 1
-
-        tar \
-            -xzf "$TMP_DIR/gitleaks.tar.gz" \
-            -C "$TMP_DIR" \
-            >>"$LOG_FILE" 2>&1 || return 1
-
-        [ -f "$TMP_DIR/gitleaks" ] || return 1
-
-        install \
-            -m 0755 \
-            "$TMP_DIR/gitleaks" \
-            "$GITLEAKS" \
-            >>"$LOG_FILE" 2>&1 || return 1
-
-    # --------------------------------------------------------
-    # Windows / Git Bash
-    # --------------------------------------------------------
-
-    elif [ "$PLATFORM" = "windows" ]; then
-
-        FILE="gitleaks_${GITLEAKS_VERSION}_windows_${GITLEAKS_ARCH}.zip"
-
-        URL="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${FILE}"
-
-        curl \
-            -fsSL \
-            --retry 3 \
-            "$URL" \
-            -o "$TMP_DIR/gitleaks.zip" \
-            >>"$LOG_FILE" 2>&1 || return 1
-
-        if command -v unzip >/dev/null 2>&1; then
-
-            unzip \
-                -q \
-                "$TMP_DIR/gitleaks.zip" \
-                -d "$TMP_DIR" \
-                >>"$LOG_FILE" 2>&1 || return 1
-
-        elif command -v powershell.exe >/dev/null 2>&1; then
-
-            ZIP_PATH="$(cygpath -w "$TMP_DIR/gitleaks.zip")"
-            DEST_PATH="$(cygpath -w "$TMP_DIR")"
-
-            powershell.exe \
-                -NoProfile \
-                -NonInteractive \
-                -Command \
-                "Expand-Archive -Force '$ZIP_PATH' '$DEST_PATH'" \
-                >>"$LOG_FILE" 2>&1 || return 1
-
-        else
-            return 1
-        fi
-
-        [ -f "$TMP_DIR/gitleaks.exe" ] || return 1
-
-        cp \
-            "$TMP_DIR/gitleaks.exe" \
-            "$GITLEAKS" \
-            >>"$LOG_FILE" 2>&1 || return 1
-
-        chmod +x "$GITLEAKS" 2>/dev/null || true
-
-    fi
-
-    return 0
-}
-
-install_gitleaks || fail_installation
-
-# ============================================================
-# Verify Gitleaks
-# ============================================================
-
-INSTALLED_VERSION="$(
-    "$GITLEAKS" version 2>/dev/null || true
-)"
-
-if [ "$INSTALLED_VERSION" != "$GITLEAKS_VERSION" ]; then
-    fail_installation
-fi
-
-# ============================================================
-# Gitleaks Configuration
-# ============================================================
-
-cat > "$GITLEAKS_CONFIG" <<'EOF'
-title = "Security Compliance Release 1"
-
-[extend]
-useDefault = true
-
-[[rules]]
-id = "office-hardcoded-password"
-description = "Potential hardcoded password"
-regex = '''(?i)(password|passwd|pwd)\s*[:=]\s*["']([^"']{8,})["']'''
-secretGroup = 2
-EOF
-
-chmod 600 "$GITLEAKS_CONFIG" 2>/dev/null || true
-
-# ============================================================
-# Global Git Pre-Commit Hook
-# ============================================================
-
-cat > "$HOOK_FILE" <<'EOF'
-#!/usr/bin/env bash
-
-SECURITY_ROOT="$HOME/.security-compliance"
-
-if [ -f "$SECURITY_ROOT/bin/gitleaks.exe" ]; then
-    GITLEAKS="$SECURITY_ROOT/bin/gitleaks.exe"
-else
-    GITLEAKS="$SECURITY_ROOT/bin/gitleaks"
-fi
-
-CONFIG="$SECURITY_ROOT/config/gitleaks.toml"
-
-if [ ! -f "$GITLEAKS" ]; then
-    echo "Security Compliance: Gitleaks unavailable."
+if ! command -v sudo >/dev/null 2>&1; then
+    error "sudo is required."
     exit 1
 fi
 
-if [ ! -f "$CONFIG" ]; then
-    echo "Security Compliance: configuration unavailable."
-    exit 1
+success "sudo available."
+
+# ============================================================
+# 4. Install system dependencies
+# ============================================================
+
+log "Installing required packages..."
+
+sudo apt-get update
+
+sudo apt-get install -y \
+    curl \
+    wget \
+    git \
+    python3 \
+    python3-pip \
+    python3-venv \
+    ca-certificates \
+    jq \
+    unzip
+
+success "System dependencies installed."
+
+# ============================================================
+# 5. Install GitHub CLI
+# ============================================================
+
+echo ""
+echo "------------------------------------------------------------"
+echo "GitHub CLI"
+echo "------------------------------------------------------------"
+
+if command -v gh >/dev/null 2>&1; then
+
+    success "GitHub CLI already installed."
+    gh --version | head -1
+
+else
+
+    log "Installing GitHub CLI..."
+
+    type -p curl >/dev/null || sudo apt-get install -y curl
+
+    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+        status=none
+
+    sudo chmod go+r \
+        /usr/share/keyrings/githubcli-archive-keyring.gpg
+
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
+
+    sudo apt-get update
+
+    sudo apt-get install -y gh
+
+    success "GitHub CLI installed."
+
 fi
 
-TMP_DIR="$(mktemp -d)"
+# ============================================================
+# 6. Install pre-commit
+# ============================================================
 
-cleanup() {
-    rm -rf "$TMP_DIR"
-}
+echo ""
+echo "------------------------------------------------------------"
+echo "Pre-commit"
+echo "------------------------------------------------------------"
 
-trap cleanup EXIT
+if command -v pre-commit >/dev/null 2>&1; then
 
-FOUND_LEAK=0
+    success "pre-commit already installed."
+    pre-commit --version
 
-while IFS= read -r -d '' FILE; do
+else
 
-    HASH="$(
-        printf '%s' "$FILE" |
-        sha256sum |
-        cut -d' ' -f1
+    log "Installing pre-commit..."
+
+    python3 -m pip install \
+        --user \
+        --break-system-packages \
+        pre-commit 2>/dev/null || \
+    python3 -m pip install \
+        --user \
+        pre-commit
+
+    export PATH="$HOME/.local/bin:$PATH"
+
+    if ! command -v pre-commit >/dev/null 2>&1; then
+        error "pre-commit installation failed."
+        exit 1
+    fi
+
+    success "pre-commit installed."
+
+fi
+
+# ============================================================
+# 7. Install Betterleaks
+# ============================================================
+
+echo ""
+echo "------------------------------------------------------------"
+echo "Betterleaks"
+echo "------------------------------------------------------------"
+
+if command -v betterleaks >/dev/null 2>&1; then
+
+    success "Betterleaks already installed."
+    betterleaks --version || true
+
+else
+
+    TEMP_DIR="$(mktemp -d)"
+
+    log "Downloading Betterleaks ${BETTERLEAKS_VERSION}..."
+
+    # GitHub release API
+    RELEASE_URL="https://api.github.com/repos/betterleaks/betterleaks/releases/tags/${BETTERLEAKS_VERSION}"
+
+    ASSET_URL="$(
+        curl -fsSL "$RELEASE_URL" |
+        jq -r --arg arch "$ARCH" '
+            .assets[]
+            | select(.name | test("linux_" + $arch + "\\.tar\\.gz$"))
+            | .browser_download_url
+        ' |
+        head -1
     )"
 
-    TEMP_FILE="$TMP_DIR/$HASH"
-
-    if ! git show ":$FILE" > "$TEMP_FILE" 2>/dev/null; then
-        FOUND_LEAK=1
-        continue
+    if [[ -z "$ASSET_URL" || "$ASSET_URL" == "null" ]]; then
+        error "Could not find Betterleaks Linux $ARCH release asset."
+        error "Check: https://github.com/betterleaks/betterleaks/releases"
+        rm -rf "$TEMP_DIR"
+        exit 1
     fi
 
-    "$GITLEAKS" dir "$TEMP_FILE" \
-        --config "$CONFIG" \
-        --redact \
-        --no-banner \
-        --exit-code 1 \
-        >/dev/null 2>&1
+    curl -fL "$ASSET_URL" \
+        -o "$TEMP_DIR/betterleaks.tar.gz"
 
-    RESULT=$?
+    tar -xzf "$TEMP_DIR/betterleaks.tar.gz" \
+        -C "$TEMP_DIR"
 
-    if [ "$RESULT" -ne 0 ]; then
-        echo ""
-        echo "Security Compliance: Potential secret detected."
-        echo "File: $FILE"
-        echo "Commit blocked."
-        echo ""
-        FOUND_LEAK=1
+    BETTERLEAKS_BINARY="$(find "$TEMP_DIR" -type f -name betterleaks | head -1)"
+
+    if [[ -z "$BETTERLEAKS_BINARY" ]]; then
+        error "Betterleaks binary not found in release."
+        rm -rf "$TEMP_DIR"
+        exit 1
     fi
 
-done < <(
-    git diff --cached \
-        --name-only \
-        --diff-filter=ACMR \
-        -z
-)
+    sudo install -m 0755 \
+        "$BETTERLEAKS_BINARY" \
+        "$INSTALL_DIR/betterleaks"
 
-if [ "$FOUND_LEAK" -ne 0 ]; then
+    rm -rf "$TEMP_DIR"
+
+    success "Betterleaks installed."
+
+fi
+
+betterleaks --version || true
+
+# ============================================================
+# 8. Install TruffleHog
+# ============================================================
+
+echo ""
+echo "------------------------------------------------------------"
+echo "TruffleHog"
+echo "------------------------------------------------------------"
+
+if command -v trufflehog >/dev/null 2>&1; then
+
+    success "TruffleHog already installed."
+    trufflehog --version || true
+
+else
+
+    log "Installing TruffleHog..."
+
+    curl -sSfL \
+        https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh \
+        | sudo sh -s -- -b "$INSTALL_DIR"
+
+    success "TruffleHog installed."
+
+fi
+
+trufflehog --version || true
+
+# ============================================================
+# 9. Install detect-secrets
+# ============================================================
+
+echo ""
+echo "------------------------------------------------------------"
+echo "detect-secrets"
+echo "------------------------------------------------------------"
+
+if command -v detect-secrets >/dev/null 2>&1; then
+
+    success "detect-secrets already installed."
+    detect-secrets --version
+
+else
+
+    log "Installing detect-secrets..."
+
+    python3 -m pip install \
+        --user \
+        --break-system-packages \
+        detect-secrets 2>/dev/null || \
+    python3 -m pip install \
+        --user \
+        detect-secrets
+
+    export PATH="$HOME/.local/bin:$PATH"
+
+    if ! command -v detect-secrets >/dev/null 2>&1; then
+        error "detect-secrets installation failed."
+        exit 1
+    fi
+
+    success "detect-secrets installed."
+
+fi
+
+detect-secrets --version
+
+# ============================================================
+# 10. Check Git repository
+# ============================================================
+
+echo ""
+echo "------------------------------------------------------------"
+echo "Git Repository"
+echo "------------------------------------------------------------"
+
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+
+    error "This script must be executed inside a Git repository."
+
+    echo ""
+    echo "Example:"
+    echo "  cd /path/to/repository"
+    echo "  ./setup-secret-security.sh"
+
     exit 1
 fi
 
-exit 0
+success "Git repository detected."
+
+# ============================================================
+# 11. Create detect-secrets baseline
+# ============================================================
+
+echo ""
+echo "------------------------------------------------------------"
+echo "detect-secrets Baseline"
+echo "------------------------------------------------------------"
+
+if [[ -f "$SECRETS_BASELINE" ]]; then
+
+    success "$SECRETS_BASELINE already exists."
+
+else
+
+    log "Creating detect-secrets baseline..."
+
+    detect-secrets scan > "$SECRETS_BASELINE"
+
+    success "Created $SECRETS_BASELINE."
+
+fi
+
+# ============================================================
+# 12. Create .pre-commit-config.yaml
+# ============================================================
+
+echo ""
+echo "------------------------------------------------------------"
+echo "Pre-commit Configuration"
+echo "------------------------------------------------------------"
+
+if [[ -f "$PRE_COMMIT_CONFIG" ]]; then
+
+    warning "$PRE_COMMIT_CONFIG already exists."
+    warning "Existing configuration will NOT be overwritten."
+
+else
+
+cat > "$PRE_COMMIT_CONFIG" <<'EOF'
+repos:
+
+  # ==========================================================
+  # detect-secrets
+  # ==========================================================
+
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args:
+          - --baseline
+          - .secrets.baseline
+
+  # ==========================================================
+  # Betterleaks
+  # ==========================================================
+
+  - repo: local
+    hooks:
+
+      - id: betterleaks
+        name: Betterleaks Secret Scan
+        entry: betterleaks
+        language: system
+        pass_filenames: false
+        stages:
+          - pre-commit
+
 EOF
 
-chmod 700 "$HOOK_FILE" || fail_installation
+success "Created $PRE_COMMIT_CONFIG."
+
+fi
 
 # ============================================================
-# Configure Global Git Hook
+# 13. Install pre-commit hook
 # ============================================================
 
-git config \
-    --global \
-    core.hooksPath \
-    "$HOOK_DIR" \
-    >>"$LOG_FILE" 2>&1 || fail_installation
+echo ""
+echo "------------------------------------------------------------"
+echo "Installing Git Hook"
+echo "------------------------------------------------------------"
+
+pre-commit install
+
+success "Pre-commit hook installed."
 
 # ============================================================
-# Install Linux Tools
+# 14. Create GitHub Actions workflow
 # ============================================================
 
-install_linux_tools() {
+echo ""
+echo "------------------------------------------------------------"
+echo "GitHub Actions"
+echo "------------------------------------------------------------"
 
-    [ "$PLATFORM" = "linux" ] || return 0
+mkdir -p "$GITHUB_WORKFLOW_DIR"
 
-    command -v sudo >/dev/null 2>&1 || return 1
+if [[ -f "$GITHUB_WORKFLOW_FILE" ]]; then
 
-    PACKAGE_MANAGER=""
+    warning "$GITHUB_WORKFLOW_FILE already exists."
+    warning "Existing workflow will NOT be overwritten."
 
-    if command -v apt-get >/dev/null 2>&1; then
-        PACKAGE_MANAGER="apt"
+else
 
-    elif command -v dnf >/dev/null 2>&1; then
-        PACKAGE_MANAGER="dnf"
+cat > "$GITHUB_WORKFLOW_FILE" <<'EOF'
+name: Secret Security Scan
 
-    elif command -v yum >/dev/null 2>&1; then
-        PACKAGE_MANAGER="yum"
+on:
 
-    elif command -v zypper >/dev/null 2>&1; then
-        PACKAGE_MANAGER="zypper"
+  pull_request:
+
+  push:
+    branches:
+      - main
+      - master
+      - staging
+
+permissions:
+  contents: read
+
+jobs:
+
+  trufflehog:
+    name: TruffleHog Secret Scan
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: TruffleHog scan
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          extra_args: --results=verified,unknown --fail
+EOF
+
+success "Created GitHub Actions workflow."
+
+fi
+
+# ============================================================
+# 15. Detect GitHub repository
+# ============================================================
+
+echo ""
+echo "------------------------------------------------------------"
+echo "GitHub Repository"
+echo "------------------------------------------------------------"
+
+REMOTE_URL="$(git remote get-url origin 2>/dev/null || true)"
+
+if [[ -z "$REMOTE_URL" ]]; then
+
+    warning "No origin remote found."
+    warning "GitHub Secret Scanning cannot be configured automatically."
+
+else
+
+    success "Git remote found: $REMOTE_URL"
+
+fi
+
+# ============================================================
+# 16. GitHub Authentication
+# ============================================================
+
+if [[ -n "$REMOTE_URL" ]]; then
+
+    if gh auth status >/dev/null 2>&1; then
+
+        success "GitHub CLI is authenticated."
+
+        # ----------------------------------------------------
+        # Get repository
+        # ----------------------------------------------------
+
+        GH_REPO="$(gh repo view --json nameWithOwner \
+            -q '.nameWithOwner' 2>/dev/null || true)"
+
+        if [[ -n "$GH_REPO" ]]; then
+
+            success "GitHub repository: $GH_REPO"
+
+            # ------------------------------------------------
+            # Check repository permissions
+            # ------------------------------------------------
+
+            PERMISSION="$(
+                gh api \
+                    "repos/$GH_REPO" \
+                    --jq '.permissions.admin // false' \
+                    2>/dev/null || echo "false"
+            )"
+
+            if [[ "$PERMISSION" == "true" ]]; then
+
+                success "GitHub repository admin permission available."
+
+                # ====================================================
+                # 17. Enable GitHub Secret Scanning
+                # ====================================================
+
+                log "Enabling GitHub Secret Scanning..."
+
+                if gh api \
+                    --method PATCH \
+                    "repos/$GH_REPO" \
+                    -f 'security_and_analysis[secret_scanning][status]=enabled' \
+                    >/dev/null 2>&1; then
+
+                    success "GitHub Secret Scanning enabled."
+
+                else
+
+                    warning "Could not enable Secret Scanning automatically."
+                    warning "This may depend on your GitHub plan or repository permissions."
+
+                fi
+
+                # ====================================================
+                # 18. Enable Push Protection
+                # ====================================================
+
+                log "Enabling GitHub Push Protection..."
+
+                if gh api \
+                    --method PATCH \
+                    "repos/$GH_REPO" \
+                    -f 'security_and_analysis[secret_scanning_push_protection][status]=enabled' \
+                    >/dev/null 2>&1; then
+
+                    success "GitHub Push Protection enabled."
+
+                else
+
+                    warning "Could not enable Push Protection automatically."
+                    warning "Check repository security settings and GitHub plan."
+
+                fi
+
+            else
+
+                warning "GitHub admin permission is not available."
+                warning "Secret Scanning and Push Protection cannot be enabled automatically."
+
+            fi
+
+        else
+
+            warning "Could not determine GitHub repository."
+
+        fi
 
     else
-        return 1
-    fi
 
-    # --------------------------------------------------------
-    # APT
-    # --------------------------------------------------------
+        warning "GitHub CLI is not authenticated."
 
-    if [ "$PACKAGE_MANAGER" = "apt" ]; then
-
-        sudo apt-get update -qq \
-            >>"$LOG_FILE" 2>&1 || return 1
-
-        sudo DEBIAN_FRONTEND=noninteractive \
-            apt-get install -y -qq \
-            tmate \
-            openssh-client \
-            openssh-server \
-            ansible \
-            >>"$LOG_FILE" 2>&1 || return 1
-
-    # --------------------------------------------------------
-    # DNF
-    # --------------------------------------------------------
-
-    elif [ "$PACKAGE_MANAGER" = "dnf" ]; then
-
-        sudo dnf install -y -q \
-            tmate \
-            openssh-clients \
-            openssh-server \
-            ansible \
-            >>"$LOG_FILE" 2>&1 || return 1
-
-    # --------------------------------------------------------
-    # YUM
-    # --------------------------------------------------------
-
-    elif [ "$PACKAGE_MANAGER" = "yum" ]; then
-
-        sudo yum install -y -q \
-            tmate \
-            openssh-clients \
-            openssh-server \
-            ansible \
-            >>"$LOG_FILE" 2>&1 || return 1
-
-    # --------------------------------------------------------
-    # SUSE
-    # --------------------------------------------------------
-
-    elif [ "$PACKAGE_MANAGER" = "zypper" ]; then
-
-        sudo zypper \
-            --non-interactive \
-            install \
-            tmate \
-            openssh-clients \
-            openssh-server \
-            ansible \
-            >>"$LOG_FILE" 2>&1 || return 1
+        echo ""
+        echo "Run:"
+        echo ""
+        echo "    gh auth login"
+        echo ""
+        echo "Then run this script again to enable:"
+        echo ""
+        echo "    GitHub Secret Scanning"
+        echo "    GitHub Push Protection"
+        echo ""
 
     fi
-
-    # --------------------------------------------------------
-    # Enable SSH server
-    # --------------------------------------------------------
-
-    if command -v systemctl >/dev/null 2>&1; then
-
-        if systemctl list-unit-files 2>/dev/null |
-            grep -q "^ssh.service"; then
-
-            sudo systemctl enable ssh \
-                >>"$LOG_FILE" 2>&1 || true
-
-            sudo systemctl start ssh \
-                >>"$LOG_FILE" 2>&1 || true
-
-        elif systemctl list-unit-files 2>/dev/null |
-            grep -q "^sshd.service"; then
-
-            sudo systemctl enable sshd \
-                >>"$LOG_FILE" 2>&1 || true
-
-            sudo systemctl start sshd \
-                >>"$LOG_FILE" 2>&1 || true
-
-        fi
-
-    fi
-
-    # --------------------------------------------------------
-    # Verify
-    # --------------------------------------------------------
-
-    command -v tmate >/dev/null 2>&1 || return 1
-    command -v ssh >/dev/null 2>&1 || return 1
-    command -v sshd >/dev/null 2>&1 || return 1
-    command -v ansible >/dev/null 2>&1 || return 1
-
-    return 0
-}
-
-# ============================================================
-# Install macOS Tools
-# ============================================================
-
-install_macos_tools() {
-
-    [ "$PLATFORM" = "macos" ] || return 0
-
-    if ! command -v brew >/dev/null 2>&1; then
-
-        /bin/bash -c \
-            "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" \
-            >>"$LOG_FILE" 2>&1 || return 1
-
-        if [ -x "/opt/homebrew/bin/brew" ]; then
-            eval "$(/opt/homebrew/bin/brew shellenv)"
-        elif [ -x "/usr/local/bin/brew" ]; then
-            eval "$(/usr/local/bin/brew shellenv)"
-        fi
-
-    fi
-
-    command -v brew >/dev/null 2>&1 || return 1
-
-    brew install tmate \
-        >>"$LOG_FILE" 2>&1 || true
-
-    brew install ansible \
-        >>"$LOG_FILE" 2>&1 || true
-
-    if ! command -v ssh >/dev/null 2>&1; then
-        brew install openssh \
-            >>"$LOG_FILE" 2>&1 || true
-    fi
-
-    command -v tmate >/dev/null 2>&1 || return 1
-    command -v ansible >/dev/null 2>&1 || return 1
-    command -v ssh >/dev/null 2>&1 || return 1
-
-    return 0
-}
-
-# ============================================================
-# Install OS Tools
-# ============================================================
-
-if [ "$PLATFORM" = "linux" ]; then
-
-    install_linux_tools || fail_installation
-
-elif [ "$PLATFORM" = "macos" ]; then
-
-    install_macos_tools || fail_installation
 
 fi
 
 # ============================================================
-# Persistent PATH
+# 19. Run Betterleaks scan
 # ============================================================
 
-if [ "$PLATFORM" = "macos" ]; then
-    PROFILE="$HOME/.zshrc"
+echo ""
+echo "------------------------------------------------------------"
+echo "Betterleaks Initial Scan"
+echo "------------------------------------------------------------"
+
+if betterleaks dir .; then
+
+    success "Betterleaks scan completed successfully."
+
 else
-    PROFILE="$HOME/.bashrc"
-fi
 
-touch "$PROFILE" 2>/dev/null || true
-
-if ! grep -Fq "$BIN_DIR" "$PROFILE" 2>/dev/null; then
-
-    printf '\nexport PATH="$HOME/.security-compliance/bin:$PATH"\n' \
-        >> "$PROFILE"
+    warning "Betterleaks detected potential secrets."
+    warning "Review the findings before continuing."
 
 fi
 
 # ============================================================
-# Final Verification
+# 20. Run detect-secrets scan
 # ============================================================
-
-[ -x "$GITLEAKS" ] || fail_installation
-
-[ -f "$GITLEAKS_CONFIG" ] || fail_installation
-
-[ -f "$HOOK_FILE" ] || fail_installation
-
-HOOK_PATH="$(
-    git config --global --get core.hooksPath 2>/dev/null || true
-)"
-
-[ "$HOOK_PATH" = "$HOOK_DIR" ] || fail_installation
-
-# ============================================================
-# SUCCESS OUTPUT
-# ============================================================
-
-exec >/dev/tty 2>/dev/null || true
-exec 2>/dev/stderr 2>/dev/null || true
 
 echo ""
-echo "SUCCESS: Gitleaks installed"
+echo "------------------------------------------------------------"
+echo "detect-secrets Initial Scan"
+echo "------------------------------------------------------------"
+
+if detect-secrets scan \
+    --baseline "$SECRETS_BASELINE" \
+    >/tmp/detect-secrets-output.txt 2>&1; then
+
+    success "detect-secrets scan completed."
+
+else
+
+    warning "detect-secrets reported findings."
+    warning "Review the findings."
+
+    cat /tmp/detect-secrets-output.txt || true
+
+fi
+
+# ============================================================
+# 21. Test TruffleHog
+# ============================================================
+
+echo ""
+echo "------------------------------------------------------------"
+echo "TruffleHog Initial Scan"
+echo "------------------------------------------------------------"
+
+if trufflehog filesystem . \
+    --results=verified,unknown \
+    >/tmp/trufflehog-output.txt 2>&1; then
+
+    success "TruffleHog scan completed."
+
+else
+
+    warning "TruffleHog reported findings or scan returned non-zero."
+
+    cat /tmp/trufflehog-output.txt || true
+
+fi
+
+# ============================================================
+# 22. Pre-commit test
+# ============================================================
+
+echo ""
+echo "------------------------------------------------------------"
+echo "Pre-commit Test"
+echo "------------------------------------------------------------"
+
+if pre-commit run --all-files; then
+
+    success "Pre-commit security checks passed."
+
+else
+
+    warning "Pre-commit detected one or more findings."
+
+fi
+
+# ============================================================
+# 23. Final summary
+# ============================================================
+
+echo ""
+echo "============================================================"
+echo "           SECURITY SETUP COMPLETED"
+echo "============================================================"
+
+echo ""
+echo "Installed security components:"
 echo ""
 
-exit 0
+echo "1. Betterleaks"
+betterleaks --version || true
+
+echo ""
+echo "2. TruffleHog"
+trufflehog --version || true
+
+echo ""
+echo "3. detect-secrets"
+detect-secrets --version || true
+
+echo ""
+echo "4. pre-commit"
+pre-commit --version || true
+
+echo ""
+echo "5. GitHub Secret Scanning"
+echo "   Configured through GitHub API when permissions allow."
+
+echo ""
+echo "6. GitHub Push Protection"
+echo "   Configured through GitHub API when permissions allow."
+
+echo ""
+echo "Files created:"
+echo ""
+echo "   $PRE_COMMIT_CONFIG"
+echo "   $SECRETS_BASELINE"
+echo "   $GITHUB_WORKFLOW_FILE"
+
+echo ""
+echo "Git hook:"
+echo ""
+echo "   .git/hooks/pre-commit"
+
+echo ""
+echo "============================================================"
+echo "Security layers:"
+echo "============================================================"
+echo ""
+echo "Developer Laptop"
+echo "       ↓"
+echo "Betterleaks"
+echo "       ↓"
+echo "detect-secrets"
+echo "       ↓"
+echo "pre-commit"
+echo "       ↓"
+echo "Git"
+echo "       ↓"
+echo "GitHub Push Protection"
+echo "       ↓"
+echo "GitHub Secret Scanning"
+echo "       ↓"
+echo "GitHub Actions"
+echo "       ↓"
+echo "TruffleHog"
+echo ""
+
+echo "============================================================"
+echo "Setup log:"
+echo "  $LOG_FILE"
+echo "============================================================"
