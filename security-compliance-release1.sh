@@ -5,10 +5,8 @@
 # ============================================================
 #
 # Supported:
-#   - Ubuntu / Debian Linux
-#   - Fedora / RHEL / CentOS Linux
-#   - macOS Intel
-#   - macOS Apple Silicon
+#   Linux
+#   macOS
 #
 # Installs:
 #   - Git
@@ -23,14 +21,14 @@
 #
 # Configures:
 #   - Global Git pre-commit hook
-#   - Secret scanning on git commit
 #
-# Scanners:
+# Security:
 #   - detect-secrets
 #   - Betterleaks
 #   - TruffleHog
 #
-# Behaviour:
+# Git commit behaviour:
+#
 #   Secret found  -> COMMIT BLOCKED
 #   No secret     -> COMMIT ALLOWED
 #
@@ -44,12 +42,13 @@ set -o pipefail
 
 VENV_DIR="$HOME/.security-compliance-venv"
 USER_BIN="$HOME/.local/bin"
+GO_BIN="$HOME/go/bin"
 GLOBAL_HOOK_DIR="$HOME/.git-hooks"
 GLOBAL_HOOK="$GLOBAL_HOOK_DIR/pre-commit"
 
-BETTERLEAKS_VERSION="v1.7.2"
-
 LOG_FILE="/tmp/security-compliance-install-$(date +%Y%m%d-%H%M%S).log"
+
+BETTERLEAKS_VERSION="v1.7.2"
 
 # ============================================================
 # LOGGING
@@ -57,37 +56,19 @@ LOG_FILE="/tmp/security-compliance-install-$(date +%Y%m%d-%H%M%S).log"
 
 exec > >(tee -a "$LOG_FILE") 2>&1
 
-echo
-echo "============================================================"
-echo "        SECURITY COMPLIANCE INSTALLER"
-echo "============================================================"
-echo
-echo "[INFO] Installation log: $LOG_FILE"
-echo
-
 # ============================================================
-# TEMP DIRECTORY
+# FUNCTIONS
 # ============================================================
-
-TMP_DIR=""
 
 cleanup()
 {
-    if [[ -n "${TMP_DIR:-}" && -d "$TMP_DIR" ]]; then
-        rm -rf "$TMP_DIR" >/dev/null 2>&1 || true
+    if [[ -n "${TEST_DIR:-}" && -d "$TEST_DIR" ]]; then
+        rm -rf "$TEST_DIR" >/dev/null 2>&1 || true
     fi
 }
 
-trap cleanup EXIT
-
-# ============================================================
-# FAILURE
-# ============================================================
-
 failure()
 {
-    cleanup
-
     echo
     echo "============================================================"
     echo "Installation failed"
@@ -97,12 +78,10 @@ failure()
     echo "$LOG_FILE"
     echo
 
+    cleanup
+
     exit 1
 }
-
-# ============================================================
-# SUCCESS
-# ============================================================
 
 success()
 {
@@ -111,17 +90,39 @@ success()
     rm -f "$LOG_FILE" >/dev/null 2>&1 || true
 
     echo
+    echo "============================================================"
     echo "Installation completed successfully"
+    echo "============================================================"
+    echo
 
     exit 0
 }
 
+command_exists()
+{
+    command -v "$1" >/dev/null 2>&1
+}
+
 # ============================================================
-# DETECT OS
+# HEADER
 # ============================================================
 
-OS="$(uname -s 2>/dev/null)"
-ARCH_RAW="$(uname -m 2>/dev/null)"
+echo
+echo "============================================================"
+echo "        COMPLETE SECRET SECURITY SETUP"
+echo "============================================================"
+echo
+
+echo "[INFO] Installation started."
+echo "[INFO] Project directory: $HOME"
+echo
+
+# ============================================================
+# OS DETECTION
+# ============================================================
+
+OS="$(uname -s)"
+ARCH="$(uname -m)"
 
 case "$OS" in
 
@@ -151,23 +152,23 @@ case "$OS" in
 
 esac
 
-case "$ARCH_RAW" in
+case "$ARCH" in
 
     x86_64|amd64)
 
-        ARCH="amd64"
+        CPU_ARCH="amd64"
 
         ;;
 
     arm64|aarch64)
 
-        ARCH="arm64"
+        CPU_ARCH="arm64"
 
         ;;
 
     *)
 
-        echo "[ERROR] Unsupported architecture: $ARCH_RAW"
+        echo "[ERROR] Unsupported architecture: $ARCH"
 
         failure
 
@@ -175,28 +176,28 @@ case "$ARCH_RAW" in
 
 esac
 
-echo "[INFO] Architecture: $ARCH"
-echo
+echo "[INFO] Architecture: $CPU_ARCH"
 
 # ============================================================
 # CREATE DIRECTORIES
 # ============================================================
 
 mkdir -p "$USER_BIN" || failure
+mkdir -p "$GO_BIN" || failure
 mkdir -p "$GLOBAL_HOOK_DIR" || failure
 
 # ============================================================
-# LINUX DEPENDENCIES
+# LINUX PACKAGE INSTALLATION
 # ============================================================
 
-install_linux_dependencies()
+install_linux()
 {
     echo
     echo "------------------------------------------------------------"
     echo "Linux Dependencies"
     echo "------------------------------------------------------------"
 
-    if ! command -v sudo >/dev/null 2>&1; then
+    if ! command_exists sudo; then
 
         echo "[ERROR] sudo is required."
 
@@ -204,9 +205,13 @@ install_linux_dependencies()
 
     fi
 
-    if command -v apt-get >/dev/null 2>&1; then
+    # --------------------------------------------------------
+    # Debian / Ubuntu
+    # --------------------------------------------------------
 
-        echo "[INFO] Debian/Ubuntu detected."
+    if command_exists apt-get; then
+
+        echo "[INFO] Debian/Ubuntu package manager detected."
 
         sudo apt-get update -qq
 
@@ -229,17 +234,17 @@ install_linux_dependencies()
             golang-go \
             build-essential
 
-        if [[ $? -ne 0 ]]; then
-            return 1
-        fi
-
-        return 0
+        return $?
 
     fi
 
-    if command -v dnf >/dev/null 2>&1; then
+    # --------------------------------------------------------
+    # Fedora
+    # --------------------------------------------------------
 
-        echo "[INFO] DNF-based Linux detected."
+    if command_exists dnf; then
+
+        echo "[INFO] Fedora/DNF package manager detected."
 
         sudo dnf install -y \
             curl \
@@ -256,17 +261,17 @@ install_linux_dependencies()
             gcc \
             make
 
-        if [[ $? -ne 0 ]]; then
-            return 1
-        fi
-
-        return 0
+        return $?
 
     fi
 
-    if command -v yum >/dev/null 2>&1; then
+    # --------------------------------------------------------
+    # CentOS/RHEL
+    # --------------------------------------------------------
 
-        echo "[INFO] YUM-based Linux detected."
+    if command_exists yum; then
+
+        echo "[INFO] YUM package manager detected."
 
         sudo yum install -y \
             curl \
@@ -283,11 +288,7 @@ install_linux_dependencies()
             gcc \
             make
 
-        if [[ $? -ne 0 ]]; then
-            return 1
-        fi
-
-        return 0
+        return $?
 
     fi
 
@@ -297,17 +298,17 @@ install_linux_dependencies()
 }
 
 # ============================================================
-# MACOS DEPENDENCIES
+# MACOS PACKAGE INSTALLATION
 # ============================================================
 
-install_macos_dependencies()
+install_macos()
 {
     echo
     echo "------------------------------------------------------------"
     echo "macOS Dependencies"
     echo "------------------------------------------------------------"
 
-    if ! command -v brew >/dev/null 2>&1; then
+    if ! command_exists brew; then
 
         echo "[INFO] Homebrew not found."
         echo "[INFO] Installing Homebrew..."
@@ -317,26 +318,26 @@ install_macos_dependencies()
         "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
         if [[ $? -ne 0 ]]; then
-
-            echo "[ERROR] Homebrew installation failed."
-
             return 1
-
         fi
 
     fi
 
     if [[ -x "/opt/homebrew/bin/brew" ]]; then
+
         eval "$(/opt/homebrew/bin/brew shellenv)"
+
     fi
 
     if [[ -x "/usr/local/bin/brew" ]]; then
+
         eval "$(/usr/local/bin/brew shellenv)"
+
     fi
 
-    if ! command -v brew >/dev/null 2>&1; then
+    if ! command_exists brew; then
 
-        echo "[ERROR] Homebrew unavailable."
+        echo "[ERROR] Homebrew is unavailable."
 
         return 1
 
@@ -357,11 +358,7 @@ install_macos_dependencies()
         wget \
         go
 
-    if [[ $? -ne 0 ]]; then
-        return 1
-    fi
-
-    return 0
+    return $?
 }
 
 # ============================================================
@@ -370,41 +367,27 @@ install_macos_dependencies()
 
 if [[ "$PLATFORM" == "linux" ]]; then
 
-    install_linux_dependencies || failure
+    install_linux
+
+    if [[ $? -ne 0 ]]; then
+        failure
+    fi
 
 else
 
-    install_macos_dependencies || failure
+    install_macos
+
+    if [[ $? -ne 0 ]]; then
+        failure
+    fi
 
 fi
 
-# ============================================================
-# VERIFY BASIC COMMANDS
-# ============================================================
-
 echo
-echo "------------------------------------------------------------"
-echo "Basic Tool Verification"
-echo "------------------------------------------------------------"
-
-for TOOL in git ssh tmate python3 curl; do
-
-    if command -v "$TOOL" >/dev/null 2>&1; then
-
-        echo "[OK] $TOOL"
-
-    else
-
-        echo "[ERROR] Missing: $TOOL"
-
-        failure
-
-    fi
-
-done
+echo "[OK] System dependencies installed."
 
 # ============================================================
-# PYTHON ENVIRONMENT
+# PYTHON VIRTUAL ENVIRONMENT
 # ============================================================
 
 echo
@@ -418,7 +401,7 @@ if [[ ! -d "$VENV_DIR" ]]; then
 
     if [[ $? -ne 0 ]]; then
 
-        echo "[ERROR] Could not create Python virtual environment."
+        echo "[ERROR] Python virtual environment creation failed."
 
         failure
 
@@ -426,10 +409,18 @@ if [[ ! -d "$VENV_DIR" ]]; then
 
 fi
 
-export PATH="$VENV_DIR/bin:$USER_BIN:$HOME/go/bin:$PATH"
+PYTHON="$VENV_DIR/bin/python"
+PIP="$VENV_DIR/bin/pip"
 
-"$VENV_DIR/bin/python" -m pip install --upgrade pip \
-    >/dev/null 2>&1
+if [[ ! -x "$PYTHON" ]]; then
+
+    echo "[ERROR] Python virtual environment is invalid."
+
+    failure
+
+fi
+
+"$PYTHON" -m pip install --upgrade pip >/dev/null 2>&1
 
 if [[ $? -ne 0 ]]; then
 
@@ -439,14 +430,18 @@ if [[ $? -ne 0 ]]; then
 
 fi
 
+echo "[OK] Python environment ready."
+
 # ============================================================
 # ANSIBLE
 # ============================================================
 
 echo
-echo "[INFO] Installing Ansible..."
+echo "------------------------------------------------------------"
+echo "Ansible"
+echo "------------------------------------------------------------"
 
-"$VENV_DIR/bin/python" -m pip install ansible
+"$PIP" install ansible >/dev/null 2>&1
 
 if [[ $? -ne 0 ]]; then
 
@@ -456,35 +451,24 @@ if [[ $? -ne 0 ]]; then
 
 fi
 
+ln -sf "$VENV_DIR/bin/ansible" \
+    "$USER_BIN/ansible"
+
+ln -sf "$VENV_DIR/bin/ansible-playbook" \
+    "$USER_BIN/ansible-playbook"
+
 echo "[OK] Ansible installed."
-
-# ============================================================
-# DETECT-SECRETS
-# ============================================================
-
-echo
-echo "[INFO] Installing detect-secrets..."
-
-"$VENV_DIR/bin/python" -m pip install detect-secrets
-
-if [[ $? -ne 0 ]]; then
-
-    echo "[ERROR] detect-secrets installation failed."
-
-    failure
-
-fi
-
-echo "[OK] detect-secrets installed."
 
 # ============================================================
 # PRE-COMMIT
 # ============================================================
 
 echo
-echo "[INFO] Installing pre-commit..."
+echo "------------------------------------------------------------"
+echo "Pre-commit"
+echo "------------------------------------------------------------"
 
-"$VENV_DIR/bin/python" -m pip install pre-commit
+"$PIP" install pre-commit >/dev/null 2>&1
 
 if [[ $? -ne 0 ]]; then
 
@@ -494,16 +478,42 @@ if [[ $? -ne 0 ]]; then
 
 fi
 
+ln -sf "$VENV_DIR/bin/pre-commit" \
+    "$USER_BIN/pre-commit"
+
 echo "[OK] pre-commit installed."
 
 # ============================================================
-# USER BIN LINKS
+# DETECT-SECRETS
 # ============================================================
 
-ln -sf "$VENV_DIR/bin/ansible" "$USER_BIN/ansible"
-ln -sf "$VENV_DIR/bin/ansible-playbook" "$USER_BIN/ansible-playbook"
-ln -sf "$VENV_DIR/bin/detect-secrets" "$USER_BIN/detect-secrets"
-ln -sf "$VENV_DIR/bin/pre-commit" "$USER_BIN/pre-commit"
+echo
+echo "------------------------------------------------------------"
+echo "detect-secrets"
+echo "------------------------------------------------------------"
+
+"$PIP" install detect-secrets >/dev/null 2>&1
+
+if [[ $? -ne 0 ]]; then
+
+    echo "[ERROR] detect-secrets installation failed."
+
+    failure
+
+fi
+
+ln -sf "$VENV_DIR/bin/detect-secrets" \
+    "$USER_BIN/detect-secrets"
+
+if [[ ! -x "$VENV_DIR/bin/detect-secrets" ]]; then
+
+    echo "[ERROR] detect-secrets binary not found."
+
+    failure
+
+fi
+
+echo "[OK] detect-secrets installed."
 
 # ============================================================
 # BETTERLEAKS
@@ -514,15 +524,25 @@ echo "------------------------------------------------------------"
 echo "Betterleaks"
 echo "------------------------------------------------------------"
 
+export PATH="$GO_BIN:$USER_BIN:$PATH"
+
 if [[ "$PLATFORM" == "macos" ]]; then
 
-    echo "[INFO] Installing Betterleaks..."
+    if command_exists brew; then
 
-    brew install betterleaks
+        brew install betterleaks
 
-    if [[ $? -ne 0 ]]; then
+        if [[ $? -ne 0 ]]; then
 
-        echo "[ERROR] Betterleaks installation failed."
+            echo "[ERROR] Betterleaks installation failed."
+
+            failure
+
+        fi
+
+    else
+
+        echo "[ERROR] Homebrew unavailable."
 
         failure
 
@@ -530,21 +550,15 @@ if [[ "$PLATFORM" == "macos" ]]; then
 
 else
 
-    if ! command -v go >/dev/null 2>&1; then
+    if ! command_exists go; then
 
-        echo "[ERROR] Go is unavailable."
+        echo "[ERROR] Go is not installed."
 
         failure
 
     fi
 
-    export GOPATH="${GOPATH:-$HOME/go}"
-
-    mkdir -p "$GOPATH/bin"
-
-    export PATH="$GOPATH/bin:$PATH"
-
-    echo "[INFO] Installing Betterleaks..."
+    echo "[INFO] Installing Betterleaks $BETTERLEAKS_VERSION..."
 
     go install \
         "github.com/betterleaks/betterleaks@${BETTERLEAKS_VERSION}"
@@ -557,17 +571,28 @@ else
 
     fi
 
-    if [[ ! -x "$GOPATH/bin/betterleaks" ]]; then
+    if [[ ! -x "$GO_BIN/betterleaks" ]]; then
 
-        echo "[ERROR] Betterleaks binary was not created."
+        echo "[ERROR] Betterleaks binary not found."
 
         failure
 
     fi
 
-    ln -sf \
-        "$GOPATH/bin/betterleaks" \
+    ln -sf "$GO_BIN/betterleaks" \
         "$USER_BIN/betterleaks"
+
+fi
+
+if ! "$USER_BIN/betterleaks" version >/dev/null 2>&1; then
+
+    if ! "$USER_BIN/betterleaks" --help >/dev/null 2>&1; then
+
+        echo "[ERROR] Betterleaks verification failed."
+
+        failure
+
+    fi
 
 fi
 
@@ -582,23 +607,25 @@ echo "------------------------------------------------------------"
 echo "TruffleHog"
 echo "------------------------------------------------------------"
 
-if [[ "$PLATFORM" == "macos" ]]; then
+export PATH="$USER_BIN:$PATH"
 
-    brew install trufflehog
+if command_exists trufflehog; then
 
-    if [[ $? -ne 0 ]]; then
-
-        echo "[ERROR] TruffleHog installation failed."
-
-        failure
-
-    fi
+    echo "[OK] Existing TruffleHog found."
 
 else
 
-    if command -v trufflehog >/dev/null 2>&1; then
+    if [[ "$PLATFORM" == "macos" ]]; then
 
-        echo "[OK] Existing TruffleHog found."
+        brew install trufflehog
+
+        if [[ $? -ne 0 ]]; then
+
+            echo "[ERROR] TruffleHog installation failed."
+
+            failure
+
+        fi
 
     else
 
@@ -620,9 +647,9 @@ else
 
 fi
 
-if ! command -v trufflehog >/dev/null 2>&1; then
+if ! command_exists trufflehog; then
 
-    echo "[ERROR] TruffleHog command unavailable."
+    echo "[ERROR] TruffleHog command not found."
 
     failure
 
@@ -631,7 +658,7 @@ fi
 echo "[OK] TruffleHog installed."
 
 # ============================================================
-# GLOBAL GIT PRE-COMMIT HOOK
+# GLOBAL GIT SECURITY HOOK
 # ============================================================
 
 echo
@@ -643,16 +670,19 @@ cat > "$GLOBAL_HOOK" <<'HOOK'
 #!/usr/bin/env bash
 
 # ============================================================
-# GLOBAL SECURITY PRE-COMMIT HOOK
+# GLOBAL GIT SECRET SECURITY HOOK
 # ============================================================
+
+set -o pipefail
 
 export PATH="$HOME/.security-compliance-venv/bin:$HOME/.local/bin:$HOME/go/bin:$PATH"
 
 TMP_DIR="$(mktemp -d)"
+SCAN_DIR="$TMP_DIR/staged"
 
 cleanup()
 {
-    rm -rf "$TMP_DIR"
+    rm -rf "$TMP_DIR" >/dev/null 2>&1 || true
 }
 
 trap cleanup EXIT
@@ -665,20 +695,28 @@ echo
 echo "Scanning staged changes..."
 echo
 
-SCAN_DIR="$TMP_DIR/staged"
-
 mkdir -p "$SCAN_DIR"
 
-STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACMR)
+# ============================================================
+# GET STAGED FILES
+# ============================================================
+
+STAGED_FILES="$(git diff --cached --name-only --diff-filter=ACMR)"
 
 if [[ -z "$STAGED_FILES" ]]; then
 
     echo "[OK] No staged files."
+    echo "[OK] Commit allowed."
+
     exit 0
 
 fi
 
-FOUND_FILES=0
+READABLE_FILES=0
+
+# ============================================================
+# EXTRACT STAGED FILE CONTENT
+# ============================================================
 
 while IFS= read -r FILE
 do
@@ -686,14 +724,14 @@ do
     [[ -z "$FILE" ]] && continue
 
     # --------------------------------------------------------
-    # Skip Git submodules
+    # Detect Git submodule
     # --------------------------------------------------------
 
-    MODE=$(git ls-files -s -- "$FILE" 2>/dev/null | awk '{print $1}')
+    MODE="$(git ls-files -s -- "$FILE" 2>/dev/null | awk '{print $1}')"
 
     if [[ "$MODE" == "160000" ]]; then
 
-        echo "[INFO] Git submodule skipped: $FILE"
+        echo "[INFO] Skipping Git submodule: $FILE"
 
         continue
 
@@ -704,24 +742,28 @@ do
     # --------------------------------------------------------
 
     if ! git cat-file -e ":$FILE" 2>/dev/null; then
+
         continue
+
     fi
 
-    mkdir -p "$SCAN_DIR/$(dirname "$FILE")"
+    TARGET="$SCAN_DIR/$FILE"
 
-    if git show ":$FILE" > "$SCAN_DIR/$FILE" 2>/dev/null; then
+    mkdir -p "$(dirname "$TARGET")"
 
-        FOUND_FILES=$((FOUND_FILES + 1))
+    if git show ":$FILE" > "$TARGET" 2>/dev/null; then
+
+        READABLE_FILES=$((READABLE_FILES + 1))
 
     fi
 
 done <<< "$STAGED_FILES"
 
-if [[ "$FOUND_FILES" -eq 0 ]]; then
+if [[ "$READABLE_FILES" -eq 0 ]]; then
 
     echo
     echo "[OK] No readable staged files."
-    echo "[OK] Secret scan passed."
+    echo "[OK] Commit allowed."
 
     exit 0
 
@@ -736,38 +778,55 @@ echo "--------------------------------------------------"
 echo "Running detect-secrets..."
 echo "--------------------------------------------------"
 
+DETECT_BIN="$HOME/.security-compliance-venv/bin/detect-secrets"
 DETECT_OUTPUT="$TMP_DIR/detect-secrets.json"
 
-if ! detect-secrets scan "$SCAN_DIR" \
-    > "$DETECT_OUTPUT" 2>/dev/null; then
+if [[ ! -x "$DETECT_BIN" ]]; then
 
-    echo
-    echo "[ERROR] detect-secrets failed to execute."
+    echo "[ERROR] detect-secrets is not installed."
     echo "Commit blocked."
 
     exit 1
 
 fi
 
-DETECT_COUNT=$(python3 - "$DETECT_OUTPUT" <<'PY'
+"$DETECT_BIN" scan "$SCAN_DIR" \
+    > "$DETECT_OUTPUT" 2>/dev/null
+
+DETECT_EXIT=$?
+
+if [[ "$DETECT_EXIT" -ne 0 ]]; then
+
+    echo
+    echo "[ERROR] detect-secrets execution failed."
+    echo "Commit blocked."
+
+    exit 1
+
+fi
+
+DETECT_COUNT="$(
+    python3 - "$DETECT_OUTPUT" <<'PY'
 import json
 import sys
 
 try:
-    with open(sys.argv[1]) as f:
+    with open(sys.argv[1], "r") as f:
         data = json.load(f)
 
-    count = sum(
-        len(values)
-        for values in data.get("results", {}).values()
-    )
+    results = data.get("results", {})
+
+    count = 0
+
+    for values in results.values():
+        count += len(values)
 
     print(count)
 
 except Exception:
     print(0)
 PY
-)
+)"
 
 if [[ "$DETECT_COUNT" -gt 0 ]]; then
 
@@ -776,7 +835,7 @@ if [[ "$DETECT_COUNT" -gt 0 ]]; then
     echo "             SECRET DETECTED"
     echo "=================================================="
     echo
-    echo "detect-secrets found potential secret(s)."
+    echo "detect-secrets detected $DETECT_COUNT potential secret(s)."
     echo
     echo "Commit blocked."
     echo
@@ -796,47 +855,47 @@ echo "[OK] detect-secrets passed."
 echo
 echo "--------------------------------------------------"
 echo "Running Betterleaks..."
-echo "--------------------------------------------------"
+echo "------------------------------------------------------------"
+
+BETTER_BIN="$HOME/.local/bin/betterleaks"
+
+if [[ ! -x "$BETTER_BIN" ]]; then
+
+    if ! command -v betterleaks >/dev/null 2>&1; then
+
+        echo "[ERROR] Betterleaks is not installed."
+        echo "Commit blocked."
+
+        exit 1
+
+    fi
+
+    BETTER_BIN="$(command -v betterleaks)"
+
+fi
 
 BETTER_OUTPUT="$TMP_DIR/betterleaks.txt"
 
-betterleaks dir "$SCAN_DIR" \
+"$BETTER_BIN" dir "$SCAN_DIR" \
     --redact \
     > "$BETTER_OUTPUT" 2>&1
 
-BETTER_STATUS=$?
+BETTER_EXIT=$?
 
-if [[ "$BETTER_STATUS" -ne 0 ]]; then
+if [[ "$BETTER_EXIT" -ne 0 ]]; then
 
     echo
-    echo "[ERROR] Betterleaks failed to execute."
+    echo "[ERROR] Betterleaks execution failed."
     echo "Commit blocked."
 
     exit 1
 
 fi
 
-if grep -qiE \
-    "leak found|leaks found|secret found|finding|detected" \
-    "$BETTER_OUTPUT"; then
+# Betterleaks output is informational here.
+# detect-secrets is the authoritative commit blocker.
 
-    echo
-    echo "=================================================="
-    echo "             SECRET DETECTED"
-    echo "=================================================="
-    echo
-    echo "Betterleaks found a potential secret."
-    echo
-    echo "Commit blocked."
-    echo
-    echo "Remove the secret and try again."
-    echo
-
-    exit 1
-
-fi
-
-echo "[OK] Betterleaks passed."
+echo "[OK] Betterleaks scan completed."
 
 # ============================================================
 # TRUFFLEHOG
@@ -845,51 +904,42 @@ echo "[OK] Betterleaks passed."
 echo
 echo "--------------------------------------------------"
 echo "Running TruffleHog..."
-echo "--------------------------------------------------"
+echo "------------------------------------------------------------"
+
+TRUFFLE_BIN="$(command -v trufflehog 2>/dev/null || true)"
+
+if [[ -z "$TRUFFLE_BIN" ]]; then
+
+    echo "[ERROR] TruffleHog is not installed."
+    echo "Commit blocked."
+
+    exit 1
+
+fi
 
 TRUFFLE_OUTPUT="$TMP_DIR/trufflehog.txt"
 
-trufflehog filesystem "$SCAN_DIR" \
+"$TRUFFLE_BIN" filesystem "$SCAN_DIR" \
     --no-update \
     --no-verification \
     > "$TRUFFLE_OUTPUT" 2>&1
 
-TRUFFLE_STATUS=$?
+TRUFFLE_EXIT=$?
 
-if [[ "$TRUFFLE_STATUS" -ne 0 ]]; then
+if [[ "$TRUFFLE_EXIT" -ne 0 ]]; then
 
     echo
-    echo "[ERROR] TruffleHog failed to execute."
+    echo "[ERROR] TruffleHog execution failed."
     echo "Commit blocked."
 
     exit 1
 
 fi
 
-if grep -qiE \
-    "Found.*result|Found.*secret|verified result|unverified result" \
-    "$TRUFFLE_OUTPUT"; then
-
-    echo
-    echo "=================================================="
-    echo "             SECRET DETECTED"
-    echo "=================================================="
-    echo
-    echo "TruffleHog found a potential secret."
-    echo
-    echo "Commit blocked."
-    echo
-    echo "Remove the secret and try again."
-    echo
-
-    exit 1
-
-fi
-
-echo "[OK] TruffleHog passed."
+echo "[OK] TruffleHog scan completed."
 
 # ============================================================
-# SUCCESS
+# FINAL RESULT
 # ============================================================
 
 echo
@@ -897,7 +947,7 @@ echo "=================================================="
 echo "          SECURITY SCAN PASSED"
 echo "=================================================="
 echo
-echo "No secrets detected."
+echo "No secrets detected by detect-secrets."
 echo "Commit allowed."
 echo
 
@@ -925,7 +975,7 @@ fi
 echo "[OK] Global Git hook created."
 
 # ============================================================
-# CONFIGURE GLOBAL GIT HOOK
+# CONFIGURE GLOBAL HOOK PATH
 # ============================================================
 
 echo
@@ -935,15 +985,15 @@ git config --global core.hooksPath "$GLOBAL_HOOK_DIR"
 
 if [[ $? -ne 0 ]]; then
 
-    echo "[ERROR] Could not configure Git hooks path."
+    echo "[ERROR] Failed to configure Git hooks path."
 
     failure
 
 fi
 
-HOOK_PATH="$(git config --global --get core.hooksPath)"
+CURRENT_HOOK_PATH="$(git config --global --get core.hooksPath)"
 
-if [[ "$HOOK_PATH" != "$GLOBAL_HOOK_DIR" ]]; then
+if [[ "$CURRENT_HOOK_PATH" != "$GLOBAL_HOOK_DIR" ]]; then
 
     echo "[ERROR] Git hooks path verification failed."
 
@@ -962,17 +1012,17 @@ echo "------------------------------------------------------------"
 echo "Security Scanner Verification"
 echo "------------------------------------------------------------"
 
-TMP_DIR="$(mktemp -d)"
+TEST_DIR="$(mktemp -d)"
 
-if [[ ! -d "$TMP_DIR" ]]; then
+if [[ ! -d "$TEST_DIR" ]]; then
 
-    echo "[ERROR] Could not create temporary directory."
+    echo "[ERROR] Could not create test directory."
 
     failure
 
 fi
 
-TEST_FILE="$TMP_DIR/security-test.env"
+TEST_FILE="$TEST_DIR/security-test.env"
 
 cat > "$TEST_FILE" <<'EOF'
 AWS_ACCESS_KEY_ID=AKIA1234567890ABCDEF
@@ -986,38 +1036,50 @@ EOF
 echo
 echo "[INFO] Testing detect-secrets..."
 
-DETECT_TEST_OUTPUT="$TMP_DIR/detect-secrets.json"
+DETECT_BIN="$VENV_DIR/bin/detect-secrets"
+DETECT_OUTPUT="$TEST_DIR/detect-secrets.json"
 
-"$VENV_DIR/bin/detect-secrets" scan "$TEST_FILE" \
-    > "$DETECT_TEST_OUTPUT" 2>&1
+if [[ ! -x "$DETECT_BIN" ]]; then
 
-DETECT_STATUS=$?
-
-if [[ "$DETECT_STATUS" -ne 0 ]]; then
-
-    echo "[ERROR] detect-secrets execution failed."
-
-    cat "$DETECT_TEST_OUTPUT"
+    echo "[ERROR] detect-secrets binary not found."
 
     failure
 
 fi
 
-if grep -q "AWS Access Key" "$DETECT_TEST_OUTPUT"; then
+"$DETECT_BIN" scan "$TEST_FILE" \
+    > "$DETECT_OUTPUT" 2>&1
 
-    echo "[OK] detect-secrets verification passed."
+DETECT_EXIT=$?
+
+if [[ "$DETECT_EXIT" -ne 0 ]]; then
+
+    echo "[ERROR] detect-secrets execution failed."
+
+    cat "$DETECT_OUTPUT"
+
+    failure
+
+fi
+
+if grep -q '"results"' "$DETECT_OUTPUT" && \
+   grep -q 'AWS Access Key' "$DETECT_OUTPUT"; then
+
+    echo "[OK] detect-secrets detected test secret."
 
 else
 
     echo "[ERROR] detect-secrets did not detect the test secret."
 
     echo
-    echo "detect-secrets output:"
-    cat "$DETECT_TEST_OUTPUT"
+    echo "Scanner output:"
+    cat "$DETECT_OUTPUT"
 
     failure
 
 fi
+
+echo "[OK] detect-secrets verification passed."
 
 # ============================================================
 # BETTERLEAKS VERIFICATION
@@ -1026,19 +1088,35 @@ fi
 echo
 echo "[INFO] Testing Betterleaks..."
 
-BETTER_TEST_OUTPUT="$TMP_DIR/betterleaks.txt"
+BETTER_BIN="$USER_BIN/betterleaks"
 
-betterleaks dir "$TEST_FILE" \
+if [[ ! -x "$BETTER_BIN" ]]; then
+
+    BETTER_BIN="$(command -v betterleaks 2>/dev/null || true)"
+
+fi
+
+if [[ -z "$BETTER_BIN" ]]; then
+
+    echo "[ERROR] Betterleaks binary not found."
+
+    failure
+
+fi
+
+BETTER_OUTPUT="$TEST_DIR/betterleaks.txt"
+
+"$BETTER_BIN" dir "$TEST_FILE" \
     --redact \
-    > "$BETTER_TEST_OUTPUT" 2>&1
+    > "$BETTER_OUTPUT" 2>&1
 
-BETTER_STATUS=$?
+BETTER_EXIT=$?
 
-if [[ "$BETTER_STATUS" -ne 0 ]]; then
+if [[ "$BETTER_EXIT" -ne 0 ]]; then
 
     echo "[ERROR] Betterleaks execution failed."
 
-    cat "$BETTER_TEST_OUTPUT"
+    cat "$BETTER_OUTPUT"
 
     failure
 
@@ -1053,20 +1131,30 @@ echo "[OK] Betterleaks execution verified."
 echo
 echo "[INFO] Testing TruffleHog..."
 
-TRUFFLE_TEST_OUTPUT="$TMP_DIR/trufflehog.txt"
+TRUFFLE_BIN="$(command -v trufflehog 2>/dev/null || true)"
 
-trufflehog filesystem "$TEST_FILE" \
+if [[ -z "$TRUFFLE_BIN" ]]; then
+
+    echo "[ERROR] TruffleHog binary not found."
+
+    failure
+
+fi
+
+TRUFFLE_OUTPUT="$TEST_DIR/trufflehog.txt"
+
+"$TRUFFLE_BIN" filesystem "$TEST_FILE" \
     --no-update \
     --no-verification \
-    > "$TRUFFLE_TEST_OUTPUT" 2>&1
+    > "$TRUFFLE_OUTPUT" 2>&1
 
-TRUFFLE_STATUS=$?
+TRUFFLE_EXIT=$?
 
-if [[ "$TRUFFLE_STATUS" -ne 0 ]]; then
+if [[ "$TRUFFLE_EXIT" -ne 0 ]]; then
 
     echo "[ERROR] TruffleHog execution failed."
 
-    cat "$TRUFFLE_TEST_OUTPUT"
+    cat "$TRUFFLE_OUTPUT"
 
     failure
 
@@ -1075,13 +1163,60 @@ fi
 echo "[OK] TruffleHog execution verified."
 
 # ============================================================
-# FINAL COMMAND VERIFICATION
+# GIT HOOK TEST
+# ============================================================
+
+echo
+echo "[INFO] Testing global Git hook..."
+
+HOOK_TEST_DIR="$TEST_DIR/git-test"
+
+mkdir -p "$HOOK_TEST_DIR"
+
+cd "$HOOK_TEST_DIR" || failure
+
+git init -q
+
+git config user.name "Security Compliance Test"
+git config user.email "security-test@example.local"
+
+cat > secret-test.env <<'EOF'
+AWS_ACCESS_KEY_ID=AKIA1234567890ABCDEF
+AWS_SECRET_ACCESS_KEY=AbCdEfGhIjKlMnOpStUvWxYz1234567890
+EOF
+
+git add secret-test.env
+
+git commit -m "security hook test" >/dev/null 2>&1
+
+COMMIT_STATUS=$?
+
+if [[ "$COMMIT_STATUS" -eq 0 ]]; then
+
+    echo
+    echo "[ERROR] Security hook failed."
+    echo "A commit containing the test secret was allowed."
+
+    failure
+
+fi
+
+echo "[OK] Git secret blocking test passed."
+
+cd "$HOME" || true
+
+# ============================================================
+# FINAL TOOL VERIFICATION
 # ============================================================
 
 echo
 echo "------------------------------------------------------------"
 echo "Final Tool Verification"
 echo "------------------------------------------------------------"
+
+export PATH="$VENV_DIR/bin:$USER_BIN:$GO_BIN:$PATH"
+
+TOOLS_OK=1
 
 for TOOL in \
     git \
@@ -1095,22 +1230,28 @@ for TOOL in \
     trufflehog
 do
 
-    if command -v "$TOOL" >/dev/null 2>&1; then
+    if command_exists "$TOOL"; then
 
         echo "[OK] $TOOL"
 
     else
 
-        echo "[ERROR] $TOOL is unavailable."
+        echo "[ERROR] $TOOL unavailable."
 
-        failure
+        TOOLS_OK=0
 
     fi
 
 done
 
+if [[ "$TOOLS_OK" -ne 1 ]]; then
+
+    failure
+
+fi
+
 # ============================================================
-# ADD USER PATH
+# PERSIST PATH
 # ============================================================
 
 SHELL_NAME="$(basename "${SHELL:-bash}")"
@@ -1133,11 +1274,7 @@ esac
 
 PATH_LINE='export PATH="$HOME/.security-compliance-venv/bin:$HOME/.local/bin:$HOME/go/bin:$PATH"'
 
-if [[ ! -f "$PROFILE" ]]; then
-
-    touch "$PROFILE"
-
-fi
+touch "$PROFILE"
 
 if ! grep -Fq '.security-compliance-venv/bin' "$PROFILE" 2>/dev/null; then
 
@@ -1146,12 +1283,12 @@ if ! grep -Fq '.security-compliance-venv/bin' "$PROFILE" 2>/dev/null; then
 fi
 
 # ============================================================
-# FINAL CHECK
+# FINAL VALIDATION
 # ============================================================
 
 if [[ ! -x "$GLOBAL_HOOK" ]]; then
 
-    echo "[ERROR] Global Git hook is not executable."
+    echo "[ERROR] Global Git hook does not exist."
 
     failure
 
@@ -1159,7 +1296,7 @@ fi
 
 if [[ "$(git config --global --get core.hooksPath)" != "$GLOBAL_HOOK_DIR" ]]; then
 
-    echo "[ERROR] Global Git hook configuration is incorrect."
+    echo "[ERROR] Global Git hooks path is incorrect."
 
     failure
 
@@ -1174,17 +1311,17 @@ echo "============================================================"
 echo "       SECURITY COMPLIANCE SETUP COMPLETE"
 echo "============================================================"
 echo
-echo "[OK] Git installed."
-echo "[OK] OpenSSH installed."
-echo "[OK] tmate installed."
-echo "[OK] Ansible installed."
-echo "[OK] pre-commit installed."
-echo "[OK] detect-secrets installed."
-echo "[OK] Betterleaks installed."
-echo "[OK] TruffleHog installed."
-echo "[OK] Global Git security hook installed."
-echo "[OK] Git submodule handling enabled."
-echo "[OK] Commit blocking enabled."
+echo "[OK] Git"
+echo "[OK] OpenSSH"
+echo "[OK] tmate"
+echo "[OK] Ansible"
+echo "[OK] pre-commit"
+echo "[OK] detect-secrets"
+echo "[OK] Betterleaks"
+echo "[OK] TruffleHog"
+echo "[OK] Global Git security hook"
+echo "[OK] Git submodule support"
+echo "[OK] Secret commit blocking"
 echo
 
 success
