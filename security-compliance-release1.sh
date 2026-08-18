@@ -4,7 +4,7 @@
 # Security Compliance Release 1
 # Company-wide Secret Detection Installer
 #
-# Supported Platforms:
+# Supported:
 #   - Ubuntu Linux
 #   - Other Linux distributions
 #   - macOS Intel
@@ -31,7 +31,7 @@ HOOK_FILE="$HOOK_DIR/pre-commit"
 TMP_ROOT=""
 
 # ============================================================
-# Output functions
+# Output Functions
 # ============================================================
 
 info() {
@@ -154,7 +154,7 @@ if [ "$PLATFORM" = "darwin" ]; then
 fi
 
 # ------------------------------------------------------------
-# Windows through Git Bash
+# Windows / Git Bash
 # ------------------------------------------------------------
 
 if [ "$PLATFORM" = "windows" ]; then
@@ -189,7 +189,7 @@ info "Platform         : $PLATFORM"
 echo ""
 
 # ============================================================
-# Ubuntu Detection
+# Linux Distribution Detection
 # ============================================================
 
 if [ "$PLATFORM" = "linux" ]; then
@@ -273,7 +273,7 @@ if [ "$PLATFORM" = "windows" ]; then
 fi
 
 # ============================================================
-# Detect CPU Architecture
+# CPU Architecture Detection
 # ============================================================
 
 info "Detecting CPU architecture..."
@@ -334,6 +334,33 @@ fi
 success "curl is available."
 
 # ============================================================
+# Check Required Tools
+# ============================================================
+
+if [ "$PLATFORM" = "linux" ] || [ "$PLATFORM" = "darwin" ]; then
+
+    if ! command -v tar >/dev/null 2>&1; then
+
+        error "tar is required."
+        exit 1
+
+    fi
+
+fi
+
+if [ "$PLATFORM" = "windows" ]; then
+
+    if ! command -v unzip >/dev/null 2>&1 &&
+       ! command -v powershell.exe >/dev/null 2>&1; then
+
+        error "unzip or PowerShell is required."
+        exit 1
+
+    fi
+
+fi
+
+# ============================================================
 # Create Directories
 # ============================================================
 
@@ -358,10 +385,6 @@ else
     GITLEAKS="$BIN_DIR/gitleaks"
 
 fi
-
-# ============================================================
-# Add Gitleaks to Current PATH
-# ============================================================
 
 export PATH="$BIN_DIR:$PATH"
 
@@ -403,7 +426,7 @@ install_gitleaks() {
     TMP_ROOT="$(mktemp -d)" || fail
 
     # ========================================================
-    # Linux Installation
+    # Linux
     # ========================================================
 
     if [ "$PLATFORM" = "linux" ]; then
@@ -412,8 +435,7 @@ install_gitleaks() {
 
         URL="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${ARCHIVE}"
 
-        info "Downloading Gitleaks:"
-        info "$ARCHIVE"
+        info "Downloading $ARCHIVE"
 
         curl \
             --fail \
@@ -434,7 +456,7 @@ install_gitleaks() {
 
         if [ ! -f "$TMP_ROOT/gitleaks" ]; then
 
-            error "Gitleaks binary was not found after extraction."
+            error "Gitleaks binary was not found."
             fail
 
         fi
@@ -445,7 +467,7 @@ install_gitleaks() {
             "$GITLEAKS" || fail
 
     # ========================================================
-    # macOS Installation
+    # macOS
     # ========================================================
 
     elif [ "$PLATFORM" = "darwin" ]; then
@@ -454,8 +476,7 @@ install_gitleaks() {
 
         URL="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${ARCHIVE}"
 
-        info "Downloading Gitleaks:"
-        info "$ARCHIVE"
+        info "Downloading $ARCHIVE"
 
         curl \
             --fail \
@@ -476,7 +497,7 @@ install_gitleaks() {
 
         if [ ! -f "$TMP_ROOT/gitleaks" ]; then
 
-            error "Gitleaks binary was not found after extraction."
+            error "Gitleaks binary was not found."
             fail
 
         fi
@@ -487,7 +508,7 @@ install_gitleaks() {
             "$GITLEAKS" || fail
 
     # ========================================================
-    # Windows / Git Bash Installation
+    # Windows / Git Bash
     # ========================================================
 
     elif [ "$PLATFORM" = "windows" ]; then
@@ -496,8 +517,7 @@ install_gitleaks() {
 
         URL="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${ARCHIVE}"
 
-        info "Downloading Gitleaks:"
-        info "$ARCHIVE"
+        info "Downloading $ARCHIVE"
 
         curl \
             --fail \
@@ -545,7 +565,7 @@ install_gitleaks() {
 
         if [ ! -f "$TMP_ROOT/gitleaks.exe" ]; then
 
-            error "gitleaks.exe was not found after extraction."
+            error "gitleaks.exe was not found."
             fail
 
         fi
@@ -559,7 +579,6 @@ install_gitleaks() {
     fi
 
     success "Gitleaks $GITLEAKS_VERSION installed."
-
 }
 
 install_gitleaks
@@ -602,11 +621,25 @@ info "Creating Gitleaks configuration..."
 cat > "$CONFIG_FILE" <<'EOF'
 title = "Security Compliance Release 1"
 
-# Use Gitleaks default rules.
-# Company-specific rules can be added in future releases.
-
 [extend]
 useDefault = true
+
+# ============================================================
+# Company-specific rules
+# ============================================================
+
+[[rules]]
+id = "office-hardcoded-password"
+description = "Potential hardcoded password"
+regex = '''(?i)(password|passwd|pwd)\s*[:=]\s*["']([^"']{8,})["']'''
+secretGroup = 2
+keywords = ["password", "passwd", "pwd"]
+
+[[rules]]
+id = "aws-access-key"
+description = "Potential AWS Access Key ID"
+regex = '''AKIA[0-9A-Z]{16}'''
+keywords = ["AKIA"]
 EOF
 
 chmod 600 "$CONFIG_FILE"
@@ -626,9 +659,9 @@ set -u
 
 SECURITY_ROOT="$HOME/.security-compliance"
 
-# ------------------------------------------------------------
+# ============================================================
 # Detect Gitleaks executable
-# ------------------------------------------------------------
+# ============================================================
 
 if [ -f "$SECURITY_ROOT/bin/gitleaks.exe" ]; then
 
@@ -642,9 +675,9 @@ fi
 
 CONFIG="$SECURITY_ROOT/config/gitleaks.toml"
 
-# ------------------------------------------------------------
+# ============================================================
 # Verify Gitleaks
-# ------------------------------------------------------------
+# ============================================================
 
 if [ ! -f "$GITLEAKS" ] && [ ! -x "$GITLEAKS" ]; then
 
@@ -657,9 +690,9 @@ if [ ! -f "$GITLEAKS" ] && [ ! -x "$GITLEAKS" ]; then
 
 fi
 
-# ------------------------------------------------------------
-# Verify configuration
-# ------------------------------------------------------------
+# ============================================================
+# Verify Configuration
+# ============================================================
 
 if [ ! -f "$CONFIG" ]; then
 
@@ -682,38 +715,15 @@ trap cleanup EXIT
 
 FOUND_LEAK=0
 
-# ------------------------------------------------------------
-# Get staged files
-# ------------------------------------------------------------
+# ============================================================
+# Get Staged Files
+# ============================================================
 
-mapfile -d '' STAGED_FILES < <(
-    git diff --cached \
-        --name-only \
-        --diff-filter=ACMR \
-        -z
-)
-
-# ------------------------------------------------------------
-# Nothing staged
-# ------------------------------------------------------------
-
-if [ "${#STAGED_FILES[@]}" -eq 0 ]; then
-    exit 0
-fi
-
-echo ""
-echo "=================================================="
-echo "       SECURITY COMPLIANCE SECRET SCAN"
-echo "=================================================="
-echo ""
-echo "Scanning staged changes..."
-echo ""
-
-# ------------------------------------------------------------
-# Scan each staged file
-# ------------------------------------------------------------
-
-for FILE in "${STAGED_FILES[@]}"; do
+git diff --cached \
+    --name-only \
+    --diff-filter=ACMR \
+    -z |
+while IFS= read -r -d '' FILE; do
 
     HASH="$(
         printf '%s' "$FILE" |
@@ -756,7 +766,7 @@ for FILE in "${STAGED_FILES[@]}"; do
     EXIT_CODE=$?
 
     # --------------------------------------------------------
-    # Secret found
+    # Secret Found
     # --------------------------------------------------------
 
     if [ "$EXIT_CODE" -eq 1 ]; then
@@ -778,7 +788,7 @@ for FILE in "${STAGED_FILES[@]}"; do
         FOUND_LEAK=1
 
     # --------------------------------------------------------
-    # Scanner error
+    # Scanner Error
     # --------------------------------------------------------
 
     elif [ "$EXIT_CODE" -ne 0 ]; then
@@ -797,9 +807,9 @@ for FILE in "${STAGED_FILES[@]}"; do
 
 done
 
-# ------------------------------------------------------------
-# Final result
-# ------------------------------------------------------------
+# ============================================================
+# Final Result
+# ============================================================
 
 if [ "$FOUND_LEAK" -ne 0 ]; then
     exit 1
@@ -898,9 +908,6 @@ HOOK_PATH="$(
 if [ "$HOOK_PATH" != "$HOOK_DIR" ]; then
 
     error "Git global hooks path verification failed."
-    error "Expected: $HOOK_DIR"
-    error "Found: $HOOK_PATH"
-
     fail
 
 fi
