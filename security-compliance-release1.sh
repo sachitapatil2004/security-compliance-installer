@@ -1,33 +1,18 @@
 #!/usr/bin/env bash
 
 # ============================================================
-# COMPLETE SECURITY COMPLIANCE INSTALLER
-# ============================================================
-#
-# Supported:
-#   Linux
-#   macOS
-#
-# Installs:
-#   Git
-#   OpenSSH
-#   tmate
-#   Ansible
-#   pre-commit
-#   detect-secrets
-#   Betterleaks
-#   TruffleHog
-#
-# Configures:
-#   Global Git security pre-commit hook
-#
-# Installation output:
-#   SUCCESS -> Installation completed successfully
-#   FAILURE -> Installation failed
-#
+# SECURITY COMPLIANCE INSTALLER
 # ============================================================
 
 set -o pipefail
+
+LOG_FILE="/tmp/security-compliance-install-$(date +%Y%m%d-%H%M%S).log"
+
+# ------------------------------------------------------------
+# EVERYTHING BELOW THIS LINE IS SILENT
+# ------------------------------------------------------------
+
+exec >"$LOG_FILE" 2>&1
 
 # ============================================================
 # CONFIGURATION
@@ -40,43 +25,27 @@ GO_BIN="$HOME/go/bin"
 GLOBAL_HOOK_DIR="$HOME/.git-hooks"
 GLOBAL_HOOK="$GLOBAL_HOOK_DIR/pre-commit"
 
-LOG_FILE="/tmp/security-compliance-install-$(date +%Y%m%d-%H%M%S).log"
-
 BETTERLEAKS_VERSION="v1.7.2"
-
-# ============================================================
-# SILENT LOGGING
-# ============================================================
-
-exec >"$LOG_FILE" 2>&1
 
 # ============================================================
 # FUNCTIONS
 # ============================================================
 
-cleanup()
+fail()
 {
-    if [[ -n "${TEST_DIR:-}" && -d "${TEST_DIR:-}" ]]; then
-        rm -rf "$TEST_DIR" >/dev/null 2>&1 || true
-    fi
-}
+    rm -f "$LOG_FILE" >/dev/null 2>&1 || true
 
-failure()
-{
-    cleanup
-
-    echo "Installation failed"
+    printf '%s\n' "Installation failed" >&2
 
     exit 1
 }
 
 success()
 {
-    cleanup
-
     rm -f "$LOG_FILE" >/dev/null 2>&1 || true
 
-    echo "Installation completed successfully"
+    # Write ONLY this message to the original terminal.
+    printf '%s\n' "Installation completed successfully" >&3
 
     exit 0
 }
@@ -85,6 +54,12 @@ command_exists()
 {
     command -v "$1" >/dev/null 2>&1
 }
+
+# ============================================================
+# SAVE ORIGINAL TERMINAL
+# ============================================================
+
+exec 3>&1
 
 # ============================================================
 # OS DETECTION
@@ -104,7 +79,7 @@ case "$OS" in
         ;;
 
     *)
-        failure
+        fail
         ;;
 
 esac
@@ -120,40 +95,30 @@ case "$ARCH" in
         ;;
 
     *)
-        failure
+        fail
         ;;
 
 esac
 
 # ============================================================
-# CREATE DIRECTORIES
+# DIRECTORIES
 # ============================================================
 
-mkdir -p "$USER_BIN" || failure
-mkdir -p "$GO_BIN" || failure
-mkdir -p "$GLOBAL_HOOK_DIR" || failure
+mkdir -p "$USER_BIN" || fail
+mkdir -p "$GO_BIN" || fail
+mkdir -p "$GLOBAL_HOOK_DIR" || fail
 
 # ============================================================
-# LINUX INSTALLATION
+# LINUX
 # ============================================================
 
 install_linux()
 {
-    if ! command_exists sudo; then
-        return 1
-    fi
-
-    # --------------------------------------------------------
-    # Ubuntu / Debian
-    # --------------------------------------------------------
+    command_exists sudo || return 1
 
     if command_exists apt-get; then
 
-        sudo apt-get update -qq >/dev/null 2>&1
-
-        if [[ $? -ne 0 ]]; then
-            return 1
-        fi
+        sudo apt-get update -qq >/dev/null 2>&1 || return 1
 
         sudo DEBIAN_FRONTEND=noninteractive \
             apt-get install -y -qq \
@@ -176,10 +141,6 @@ install_linux()
 
     fi
 
-    # --------------------------------------------------------
-    # Fedora
-    # --------------------------------------------------------
-
     if command_exists dnf; then
 
         sudo dnf install -y -q \
@@ -201,10 +162,6 @@ install_linux()
         return $?
 
     fi
-
-    # --------------------------------------------------------
-    # RHEL / CentOS
-    # --------------------------------------------------------
 
     if command_exists yum; then
 
@@ -232,47 +189,31 @@ install_linux()
 }
 
 # ============================================================
-# MACOS INSTALLATION
+# MACOS
 # ============================================================
 
 install_macos()
 {
-    # --------------------------------------------------------
-    # Homebrew
-    # --------------------------------------------------------
-
     if ! command_exists brew; then
 
         NONINTERACTIVE=1 \
         /bin/bash -c \
         "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" \
-        >/dev/null 2>&1
-
-        if [[ $? -ne 0 ]]; then
-            return 1
-        fi
+        >/dev/null 2>&1 || return 1
 
     fi
 
     if [[ -x "/opt/homebrew/bin/brew" ]]; then
-        eval "$(/opt/homebrew/bin/brew shellenv)" \
-            >/dev/null 2>&1
+        eval "$(/opt/homebrew/bin/brew shellenv)" >/dev/null 2>&1
     fi
 
     if [[ -x "/usr/local/bin/brew" ]]; then
-        eval "$(/usr/local/bin/brew shellenv)" \
-            >/dev/null 2>&1
+        eval "$(/usr/local/bin/brew shellenv)" >/dev/null 2>&1
     fi
 
-    if ! command_exists brew; then
-        return 1
-    fi
+    command_exists brew || return 1
 
-    brew update >/dev/null 2>&1
-
-    if [[ $? -ne 0 ]]; then
-        return 1
-    fi
+    brew update >/dev/null 2>&1 || return 1
 
     brew install \
         git \
@@ -288,121 +229,74 @@ install_macos()
 }
 
 # ============================================================
-# INSTALL SYSTEM DEPENDENCIES
+# SYSTEM DEPENDENCIES
 # ============================================================
 
 if [[ "$PLATFORM" == "linux" ]]; then
 
-    install_linux >/dev/null 2>&1
-
-    if [[ $? -ne 0 ]]; then
-        failure
-    fi
+    install_linux || fail
 
 else
 
-    install_macos >/dev/null 2>&1
-
-    if [[ $? -ne 0 ]]; then
-        failure
-    fi
+    install_macos || fail
 
 fi
 
 # ============================================================
-# PYTHON ENVIRONMENT
+# PYTHON VIRTUAL ENVIRONMENT
 # ============================================================
 
 if [[ ! -d "$VENV_DIR" ]]; then
 
-    python3 -m venv "$VENV_DIR" \
-        >/dev/null 2>&1
-
-    if [[ $? -ne 0 ]]; then
-        failure
-    fi
+    python3 -m venv "$VENV_DIR" >/dev/null 2>&1 || fail
 
 fi
 
 PYTHON="$VENV_DIR/bin/python"
 PIP="$VENV_DIR/bin/pip"
 
-if [[ ! -x "$PYTHON" ]]; then
-    failure
-fi
+[[ -x "$PYTHON" ]] || fail
 
-"$PYTHON" -m pip install --upgrade pip \
-    >/dev/null 2>&1
-
-if [[ $? -ne 0 ]]; then
-    failure
-fi
+"$PYTHON" -m pip install --upgrade pip >/dev/null 2>&1 || fail
 
 # ============================================================
 # ANSIBLE
 # ============================================================
 
-"$PIP" install ansible \
-    >/dev/null 2>&1
-
-if [[ $? -ne 0 ]]; then
-    failure
-fi
+"$PIP" install ansible >/dev/null 2>&1 || fail
 
 ln -sf "$VENV_DIR/bin/ansible" \
-    "$USER_BIN/ansible" \
-    >/dev/null 2>&1
+    "$USER_BIN/ansible" >/dev/null 2>&1
 
 ln -sf "$VENV_DIR/bin/ansible-playbook" \
-    "$USER_BIN/ansible-playbook" \
-    >/dev/null 2>&1
+    "$USER_BIN/ansible-playbook" >/dev/null 2>&1
 
-if [[ ! -x "$VENV_DIR/bin/ansible" ]]; then
-    failure
-fi
+[[ -x "$VENV_DIR/bin/ansible" ]] || fail
 
 # ============================================================
 # PRE-COMMIT
 # ============================================================
 
-"$PIP" install pre-commit \
-    >/dev/null 2>&1
-
-if [[ $? -ne 0 ]]; then
-    failure
-fi
+"$PIP" install pre-commit >/dev/null 2>&1 || fail
 
 ln -sf "$VENV_DIR/bin/pre-commit" \
-    "$USER_BIN/pre-commit" \
-    >/dev/null 2>&1
+    "$USER_BIN/pre-commit" >/dev/null 2>&1
 
-if [[ ! -x "$VENV_DIR/bin/pre-commit" ]]; then
-    failure
-fi
+[[ -x "$VENV_DIR/bin/pre-commit" ]] || fail
 
 # ============================================================
 # DETECT-SECRETS
 # ============================================================
 
-"$PIP" install detect-secrets \
-    >/dev/null 2>&1
-
-if [[ $? -ne 0 ]]; then
-    failure
-fi
+"$PIP" install detect-secrets >/dev/null 2>&1 || fail
 
 ln -sf "$VENV_DIR/bin/detect-secrets" \
-    "$USER_BIN/detect-secrets" \
-    >/dev/null 2>&1
+    "$USER_BIN/detect-secrets" >/dev/null 2>&1
 
-if [[ ! -x "$VENV_DIR/bin/detect-secrets" ]]; then
-    failure
-fi
+[[ -x "$VENV_DIR/bin/detect-secrets" ]] || fail
 
-if ! "$VENV_DIR/bin/detect-secrets" --version \
-    >/dev/null 2>&1; then
-    failure
-fi
+"$VENV_DIR/bin/detect-secrets" --version \
+    >/dev/null 2>&1 || fail
 
 # ============================================================
 # BETTERLEAKS
@@ -412,53 +306,28 @@ export PATH="$GO_BIN:$USER_BIN:$VENV_DIR/bin:$PATH"
 
 if [[ "$PLATFORM" == "macos" ]]; then
 
-    brew install betterleaks \
-        >/dev/null 2>&1
-
-    if [[ $? -ne 0 ]]; then
-        failure
-    fi
+    brew install betterleaks >/dev/null 2>&1 || fail
 
 else
 
-    if ! command_exists go; then
-        failure
-    fi
+    command_exists go || fail
 
     go install \
         "github.com/betterleaks/betterleaks@${BETTERLEAKS_VERSION}" \
-        >/dev/null 2>&1
+        >/dev/null 2>&1 || fail
 
-    if [[ $? -ne 0 ]]; then
-        failure
-    fi
-
-    if [[ ! -x "$GO_BIN/betterleaks" ]]; then
-        failure
-    fi
+    [[ -x "$GO_BIN/betterleaks" ]] || fail
 
     ln -sf "$GO_BIN/betterleaks" \
-        "$USER_BIN/betterleaks" \
-        >/dev/null 2>&1
+        "$USER_BIN/betterleaks" >/dev/null 2>&1
 
 fi
 
 BETTER_BIN="$USER_BIN/betterleaks"
 
-if [[ ! -x "$BETTER_BIN" ]]; then
+[[ -x "$BETTER_BIN" ]] || fail
 
-    BETTER_BIN="$(command -v betterleaks 2>/dev/null || true)"
-
-fi
-
-if [[ -z "$BETTER_BIN" ]]; then
-    failure
-fi
-
-if ! "$BETTER_BIN" --help \
-    >/dev/null 2>&1; then
-    failure
-fi
+"$BETTER_BIN" --help >/dev/null 2>&1 || fail
 
 # ============================================================
 # TRUFFLEHOG
@@ -466,20 +335,11 @@ fi
 
 export PATH="$USER_BIN:$VENV_DIR/bin:$GO_BIN:$PATH"
 
-if command_exists trufflehog; then
-
-    :
-
-else
+if ! command_exists trufflehog; then
 
     if [[ "$PLATFORM" == "macos" ]]; then
 
-        brew install trufflehog \
-            >/dev/null 2>&1
-
-        if [[ $? -ne 0 ]]; then
-            failure
-        fi
+        brew install trufflehog >/dev/null 2>&1 || fail
 
     else
 
@@ -488,22 +348,15 @@ else
             | sudo sh -s -- -b /usr/local/bin \
             >/dev/null 2>&1
 
-        if [[ ${PIPESTATUS[0]} -ne 0 ]]; then
-            failure
-        fi
+        [[ ${PIPESTATUS[0]} -eq 0 ]] || fail
 
     fi
 
 fi
 
-if ! command_exists trufflehog; then
-    failure
-fi
+command_exists trufflehog || fail
 
-if ! trufflehog --help \
-    >/dev/null 2>&1; then
-    failure
-fi
+trufflehog --help >/dev/null 2>&1 || fail
 
 # ============================================================
 # GLOBAL GIT SECURITY HOOK
@@ -511,10 +364,6 @@ fi
 
 cat > "$GLOBAL_HOOK" <<'HOOK'
 #!/usr/bin/env bash
-
-# ============================================================
-# GLOBAL GIT SECURITY PRE-COMMIT HOOK
-# ============================================================
 
 set -o pipefail
 
@@ -540,10 +389,6 @@ echo
 
 mkdir -p "$SCAN_DIR"
 
-# ============================================================
-# GET STAGED FILES
-# ============================================================
-
 STAGED_FILES="$(git diff --cached --name-only --diff-filter=ACMR)"
 
 if [[ -z "$STAGED_FILES" ]]; then
@@ -552,10 +397,6 @@ fi
 
 READABLE_FILES=0
 
-# ============================================================
-# EXTRACT STAGED FILES
-# ============================================================
-
 while IFS= read -r FILE
 do
 
@@ -563,7 +404,7 @@ do
 
     MODE="$(git ls-files -s -- "$FILE" 2>/dev/null | awk '{print $1}')"
 
-    # Git submodule
+    # Skip Git submodules
     if [[ "$MODE" == "160000" ]]; then
         continue
     fi
@@ -631,9 +472,7 @@ try:
 
     results = data.get("results", {})
 
-    count = sum(len(values) for values in results.values())
-
-    print(count)
+    print(sum(len(v) for v in results.values()))
 
 except Exception:
     print(0)
@@ -671,9 +510,7 @@ echo "Running Betterleaks..."
 BETTER_BIN="$HOME/.local/bin/betterleaks"
 
 if [[ ! -x "$BETTER_BIN" ]]; then
-
     BETTER_BIN="$(command -v betterleaks 2>/dev/null || true)"
-
 fi
 
 if [[ -z "$BETTER_BIN" ]]; then
@@ -690,9 +527,7 @@ fi
     --redact \
     >/dev/null 2>&1
 
-BETTER_EXIT=$?
-
-if [[ "$BETTER_EXIT" -ne 0 ]]; then
+if [[ $? -ne 0 ]]; then
 
     echo
     echo "ERROR: Betterleaks detected a problem."
@@ -723,16 +558,12 @@ if [[ -z "$TRUFFLE_BIN" ]]; then
 
 fi
 
-TRUFFLE_OUTPUT="$TMP_DIR/trufflehog.txt"
-
 "$TRUFFLE_BIN" filesystem "$SCAN_DIR" \
     --no-update \
     --no-verification \
-    > "$TRUFFLE_OUTPUT" 2>&1
+    >/dev/null 2>&1
 
-TRUFFLE_EXIT=$?
-
-if [[ "$TRUFFLE_EXIT" -ne 0 ]]; then
+if [[ $? -ne 0 ]]; then
 
     echo
     echo "ERROR: TruffleHog detected a problem."
@@ -745,7 +576,7 @@ fi
 echo "[OK] TruffleHog passed."
 
 # ============================================================
-# FINAL RESULT
+# SUCCESS
 # ============================================================
 
 echo
@@ -760,36 +591,23 @@ echo
 exit 0
 HOOK
 
-if [[ $? -ne 0 ]]; then
-    failure
-fi
+[[ $? -eq 0 ]] || fail
 
-chmod +x "$GLOBAL_HOOK" \
-    >/dev/null 2>&1
-
-if [[ $? -ne 0 ]]; then
-    failure
-fi
+chmod +x "$GLOBAL_HOOK" >/dev/null 2>&1 || fail
 
 # ============================================================
-# CONFIGURE GLOBAL GIT HOOK
+# GLOBAL GIT CONFIG
 # ============================================================
 
 git config --global core.hooksPath "$GLOBAL_HOOK_DIR" \
-    >/dev/null 2>&1
-
-if [[ $? -ne 0 ]]; then
-    failure
-fi
+    >/dev/null 2>&1 || fail
 
 CURRENT_HOOK_PATH="$(
     git config --global --get core.hooksPath \
     2>/dev/null
 )"
 
-if [[ "$CURRENT_HOOK_PATH" != "$GLOBAL_HOOK_DIR" ]]; then
-    failure
-fi
+[[ "$CURRENT_HOOK_PATH" == "$GLOBAL_HOOK_DIR" ]] || fail
 
 # ============================================================
 # VERIFY TOOLS
@@ -809,9 +627,7 @@ for TOOL in \
     trufflehog
 do
 
-    if ! command_exists "$TOOL"; then
-        failure
-    fi
+    command_exists "$TOOL" || fail
 
 done
 
@@ -837,29 +653,26 @@ case "$SHELL_NAME" in
 
 esac
 
-touch "$PROFILE" \
-    >/dev/null 2>&1
+touch "$PROFILE" >/dev/null 2>&1 || fail
 
 PATH_LINE='export PATH="$HOME/.security-compliance-venv/bin:$HOME/.local/bin:$HOME/go/bin:$PATH"'
 
 if ! grep -Fq '.security-compliance-venv/bin' "$PROFILE" \
     2>/dev/null; then
 
-    echo "$PATH_LINE" >> "$PROFILE"
+    echo "$PATH_LINE" >> "$PROFILE" \
+        || fail
 
 fi
 
 # ============================================================
-# FINAL VERIFICATION
+# FINAL CHECK
 # ============================================================
 
-if [[ ! -x "$GLOBAL_HOOK" ]]; then
-    failure
-fi
+[[ -x "$GLOBAL_HOOK" ]] || fail
 
-if [[ "$(git config --global --get core.hooksPath 2>/dev/null)" != "$GLOBAL_HOOK_DIR" ]]; then
-    failure
-fi
+[[ "$(git config --global --get core.hooksPath 2>/dev/null)" == "$GLOBAL_HOOK_DIR" ]] \
+    || fail
 
 # ============================================================
 # SUCCESS
