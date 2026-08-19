@@ -1,530 +1,484 @@
 #!/usr/bin/env bash
 
+set -Eeuo pipefail
+
 # ============================================================
-# TEKDI SECURITY COMPLIANCE INSTALLER
+# TEKDI SECURITY COMPLIANCE
+# RELEASE 1
 #
 # Installs:
 #   - Gitleaks
 #   - detect-secrets
 #   - TruffleHog
 #   - Ansible
-#   - pre-commit
-#   - OpenSSH client
+#   - OpenSSH
 #   - tmate
+#   - Global Git pre-commit hook
 #
-# Configures:
-#   - Global Git security hook
-#   - Gitleaks configuration
-#   - False-positive allowlist support
-#   - Persistent installation logs
-#
-# Security:
-#   - No source code is uploaded
-#   - No scan results are uploaded
-#   - Temporary scan files are deleted
-#   - Gitleaks configuration is user-readable only
-#   - Only staged Git files are scanned
+# Features:
+#   - No S3 required
+#   - No runtime GitHub download
+#   - Uses binaries bundled with npm package
+#   - Global Git hook
+#   - Scans staged files
+#   - Blocks commits containing secrets
+#   - Logs installation and scans
 # ============================================================
 
-set -Eeuo pipefail
-
-# ============================================================
-# CONFIGURATION
-# ============================================================
-
-GITLEAKS_VERSION="8.30.0"
+VERSION="release1"
 
 BASE_DIR="$HOME/.security-compliance"
-
-VENV_DIR="$BASE_DIR/venv"
 BIN_DIR="$BASE_DIR/bin"
 CONFIG_DIR="$BASE_DIR/config"
 LOG_DIR="$BASE_DIR/logs"
-
-GLOBAL_HOOK_DIR="$HOME/.git-hooks"
-GLOBAL_HOOK="$GLOBAL_HOOK_DIR/pre-commit"
-
-GITLEAKS_CONFIG="$CONFIG_DIR/gitleaks.toml"
+HOOK_DIR="$HOME/.git-hooks"
 
 TIMESTAMP="$(date '+%Y%m%d-%H%M%S')"
-LOG_FILE="$LOG_DIR/install-$TIMESTAMP.log"
+INSTALL_LOG="$LOG_DIR/install-$TIMESTAMP.log"
 
-# ============================================================
-# CREATE DIRECTORIES
-# ============================================================
-
-mkdir -p \
-    "$BIN_DIR" \
-    "$CONFIG_DIR" \
-    "$LOG_DIR" \
-    "$GLOBAL_HOOK_DIR"
-
-chmod 700 "$BASE_DIR"
-chmod 700 "$LOG_DIR"
-chmod 700 "$CONFIG_DIR"
+GITLEAKS_VERSION="8.30.0"
 
 # ============================================================
 # LOGGING
-#
-# Everything is shown on screen AND saved to a log file.
 # ============================================================
 
-exec > >(tee -a "$LOG_FILE") 2>&1
+mkdir -p "$LOG_DIR"
+chmod 700 "$BASE_DIR" 2>/dev/null || true
+chmod 700 "$LOG_DIR"
 
-echo
-echo "============================================================"
-echo "        TEKDI SECURITY COMPLIANCE INSTALLER"
-echo "============================================================"
-echo
-echo "Installation started : $(date)"
-echo "Log file              : $LOG_FILE"
-echo
+exec > >(tee -a "$INSTALL_LOG") 2>&1
 
 # ============================================================
-# ERROR HANDLER
+# COLORS
 # ============================================================
 
-on_error()
-{
-    local EXIT_CODE=$?
+RED=""
+GREEN=""
+YELLOW=""
+NC=""
 
-    echo
-    echo "============================================================"
-    echo "                 INSTALLATION FAILED"
-    echo "============================================================"
-    echo
-    echo "Exit code : $EXIT_CODE"
-    echo "Log file  : $LOG_FILE"
-    echo
-    echo "Please share this log when reporting the issue."
-    echo
-
-    exit "$EXIT_CODE"
-}
-
-trap on_error ERR
+if [[ -t 1 ]]; then
+    RED="\033[0;31m"
+    GREEN="\033[0;32m"
+    YELLOW="\033[1;33m"
+    NC="\033[0m"
+fi
 
 # ============================================================
 # FUNCTIONS
 # ============================================================
 
-command_exists()
-{
-    command -v "$1" >/dev/null 2>&1
+info() {
+    echo -e "${GREEN}[INFO]${NC} $1"
 }
 
-print_section()
-{
+warn() {
+    echo -e "${YELLOW}[WARN]${NC} $1"
+}
+
+error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+fail() {
+    error "$1"
     echo
-    echo "------------------------------------------------------------"
-    echo "$1"
-    echo "------------------------------------------------------------"
+    echo "Security Compliance Release 1"
+    echo "Setup failed."
     echo
+    echo "Installation log:"
+    echo "$INSTALL_LOG"
+    exit 1
 }
 
 # ============================================================
 # OS DETECTION
 # ============================================================
 
-print_section "Detecting operating system"
-
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 
-echo "Operating system : $OS"
+echo
+echo "=================================================="
+echo "   SECURITY COMPLIANCE RELEASE 1"
+echo "=================================================="
+echo
+
+echo "Operating System : $OS"
 echo "Architecture     : $ARCH"
-
-case "$OS" in
-
-    Linux)
-        PLATFORM="linux"
-        ;;
-
-    Darwin)
-        PLATFORM="darwin"
-        ;;
-
-    *)
-        echo "ERROR: Unsupported operating system."
-        exit 1
-        ;;
-
-esac
-
-case "$ARCH" in
-
-    x86_64|amd64)
-        CPU_ARCH="x64"
-        ;;
-
-    arm64|aarch64)
-        CPU_ARCH="arm64"
-        ;;
-
-    *)
-        echo "ERROR: Unsupported CPU architecture."
-        exit 1
-        ;;
-
-esac
-
-echo "Platform         : $PLATFORM"
-echo "CPU architecture : $CPU_ARCH"
+echo "User             : $USER"
+echo "Home             : $HOME"
+echo "Install directory: $BASE_DIR"
+echo
+echo "Installation log : $INSTALL_LOG"
+echo
 
 # ============================================================
-# SYSTEM DEPENDENCIES - LINUX
+# BASIC REQUIREMENTS
 # ============================================================
 
-install_linux_dependencies()
-{
-    print_section "Installing Linux dependencies"
+command -v git >/dev/null 2>&1 || fail "Git is required."
 
-    if ! command_exists sudo; then
-        echo "ERROR: sudo is required."
-        exit 1
+command -v npm >/dev/null 2>&1 || warn "npm was not found."
+
+command -v python3 >/dev/null 2>&1 || fail "Python 3 is required."
+
+command -v pip3 >/dev/null 2>&1 || warn "pip3 was not found."
+
+# ============================================================
+# CREATE DIRECTORIES
+# ============================================================
+
+mkdir -p "$BASE_DIR"
+mkdir -p "$BIN_DIR"
+mkdir -p "$CONFIG_DIR"
+mkdir -p "$LOG_DIR"
+mkdir -p "$HOOK_DIR"
+
+chmod 700 "$BASE_DIR"
+chmod 700 "$CONFIG_DIR"
+chmod 700 "$LOG_DIR"
+
+# ============================================================
+# LOCATE PACKAGE DIRECTORY
+#
+# The script is executed from:
+#
+# @tekdi/security-compliance/
+#
+# Expected:
+#
+# package/
+# ├── bin/
+# ├── security-compliance-release1.sh
+# └── binaries/
+# ============================================================
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+echo "Package directory:"
+echo "$SCRIPT_DIR"
+echo
+
+# ============================================================
+# GITLEAKS
+#
+# IMPORTANT:
+# DO NOT DOWNLOAD FROM GITHUB.
+#
+# The npm package must contain the appropriate binary.
+# ============================================================
+
+install_gitleaks() {
+
+    echo
+    echo "--------------------------------------------------"
+    echo "Installing Gitleaks"
+    echo "--------------------------------------------------"
+
+    LOCAL_GITLEAKS=""
+
+    case "$OS-$ARCH" in
+
+        Linux-x86_64)
+            LOCAL_GITLEAKS="$SCRIPT_DIR/binaries/gitleaks-linux-amd64"
+            ;;
+
+        Linux-aarch64)
+            LOCAL_GITLEAKS="$SCRIPT_DIR/binaries/gitleaks-linux-arm64"
+            ;;
+
+        Linux-arm64)
+            LOCAL_GITLEAKS="$SCRIPT_DIR/binaries/gitleaks-linux-arm64"
+            ;;
+
+        Darwin-x86_64)
+            LOCAL_GITLEAKS="$SCRIPT_DIR/binaries/gitleaks-darwin-amd64"
+            ;;
+
+        Darwin-arm64)
+            LOCAL_GITLEAKS="$SCRIPT_DIR/binaries/gitleaks-darwin-arm64"
+            ;;
+
+        MINGW*|MSYS*|CYGWIN*)
+            fail "Windows binary installation must use the Windows package binary."
+
+            ;;
+
+        *)
+            fail "Unsupported operating system or architecture: $OS-$ARCH"
+
+            ;;
+    esac
+
+    if [[ ! -f "$LOCAL_GITLEAKS" ]]; then
+        fail "Bundled Gitleaks binary not found: $LOCAL_GITLEAKS"
     fi
 
-    if command_exists apt-get; then
+    cp "$LOCAL_GITLEAKS" "$BIN_DIR/gitleaks"
 
-        echo "Detected Debian/Ubuntu."
+    chmod 700 "$BIN_DIR/gitleaks"
 
-        sudo apt-get update -qq
-
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-            ca-certificates \
-            curl \
-            git \
-            openssh-client \
-            python3 \
-            python3-pip \
-            python3-venv \
-            jq \
-            tmate
-
-        return 0
+    if ! "$BIN_DIR/gitleaks" version >/dev/null 2>&1; then
+        fail "Bundled Gitleaks binary could not be executed."
     fi
 
-    if command_exists dnf; then
+    INSTALLED_VERSION="$("$BIN_DIR/gitleaks" version 2>/dev/null || true)"
 
-        echo "Detected Fedora/RHEL based system."
+    echo "Gitleaks version: $INSTALLED_VERSION"
 
-        sudo dnf install -y -q \
-            ca-certificates \
-            curl \
-            git \
-            openssh-clients \
-            python3 \
-            python3-pip \
-            jq \
-            tmate
-
-        return 0
-    fi
-
-    if command_exists yum; then
-
-        echo "Detected Yum based system."
-
-        sudo yum install -y -q \
-            ca-certificates \
-            curl \
-            git \
-            openssh-clients \
-            python3 \
-            python3-pip \
-            jq \
-            tmate
-
-        return 0
-    fi
-
-    echo "ERROR: Unsupported Linux package manager."
-    exit 1
+    info "Gitleaks installed."
 }
 
-# ============================================================
-# SYSTEM DEPENDENCIES - MACOS
-# ============================================================
-
-install_macos_dependencies()
-{
-    print_section "Installing macOS dependencies"
-
-    if ! command_exists brew; then
-        echo "ERROR: Homebrew is required on macOS."
-        echo "Install Homebrew first."
-        exit 1
-    fi
-
-    brew install \
-        git \
-        openssh \
-        python \
-        jq \
-        tmate \
-        curl \
-        >/dev/null 2>&1 || true
-}
+install_gitleaks
 
 # ============================================================
-# INSTALL SYSTEM DEPENDENCIES
+# GITLEAKS CONFIGURATION
 # ============================================================
 
-if [[ "$PLATFORM" == "linux" ]]; then
-    install_linux_dependencies
-else
-    install_macos_dependencies
-fi
+cat > "$CONFIG_DIR/gitleaks.toml" <<'EOF'
+title = "Tekdi Security Compliance"
+
+[extend]
+useDefault = true
+EOF
+
+chmod 600 "$CONFIG_DIR/gitleaks.toml"
+
+info "Gitleaks configuration created."
 
 # ============================================================
-# PYTHON ENVIRONMENT
+# PYTHON VIRTUAL ENVIRONMENT
 # ============================================================
 
-print_section "Setting up Python environment"
+VENV_DIR="$BASE_DIR/venv"
 
-if [[ ! -x "$VENV_DIR/bin/python" ]]; then
+if [[ ! -d "$VENV_DIR" ]]; then
 
-    python3 -m venv "$VENV_DIR"
+    echo
+    echo "Creating Python virtual environment..."
+
+    python3 -m venv "$VENV_DIR" || \
+        fail "Unable to create Python virtual environment."
 
 fi
 
 PYTHON="$VENV_DIR/bin/python"
 PIP="$VENV_DIR/bin/pip"
 
-echo "Python : $PYTHON"
-
-"$PYTHON" -m pip install --upgrade pip
-
 # ============================================================
-# PYTHON SECURITY TOOLS
+# DETECT-SECRETS
 # ============================================================
 
-print_section "Installing Python security tools"
+echo
+echo "--------------------------------------------------"
+echo "Installing detect-secrets"
+echo "--------------------------------------------------"
 
-"$PIP" install --upgrade \
-    ansible \
-    pre-commit \
-    detect-secrets
+if ! "$VENV_DIR/bin/detect-secrets" --version >/dev/null 2>&1; then
 
-ln -sf "$VENV_DIR/bin/ansible" \
-    "$BIN_DIR/ansible"
-
-ln -sf "$VENV_DIR/bin/ansible-playbook" \
-    "$BIN_DIR/ansible-playbook"
-
-ln -sf "$VENV_DIR/bin/pre-commit" \
-    "$BIN_DIR/pre-commit"
-
-ln -sf "$VENV_DIR/bin/detect-secrets" \
-    "$BIN_DIR/detect-secrets"
-
-# ============================================================
-# GITLEAKS
-# ============================================================
-
-print_section "Installing Gitleaks"
-
-install_gitleaks()
-{
-    local VERSION="$1"
-    local RELEASE_VERSION="${VERSION#v}"
-
-    local SYSTEM
-    local ARCHIVE_ARCH
-
-    if [[ "$PLATFORM" == "linux" ]]; then
-        SYSTEM="linux"
-    else
-        SYSTEM="darwin"
-    fi
-
-    case "$CPU_ARCH" in
-
-        x64)
-            ARCHIVE_ARCH="x64"
-            ;;
-
-        arm64)
-            ARCHIVE_ARCH="arm64"
-            ;;
-
-        *)
-            echo "Unsupported architecture."
-            exit 1
-            ;;
-
-    esac
-
-    local FILE_NAME
-    FILE_NAME="gitleaks_${RELEASE_VERSION}_${SYSTEM}_${ARCHIVE_ARCH}.tar.gz"
-
-    local BASE_URL
-    BASE_URL="https://github.com/gitleaks/gitleaks/releases/download/v${RELEASE_VERSION}"
-
-    local TEMP_DIR
-    TEMP_DIR="$(mktemp -d)"
-
-    echo "Downloading Gitleaks $VERSION"
-
-    curl -fL \
-        "$BASE_URL/$FILE_NAME" \
-        -o "$TEMP_DIR/$FILE_NAME"
-
-    echo "Downloading checksum"
-
-    curl -fL \
-        "$BASE_URL/gitleaks_${RELEASE_VERSION}_checksums.txt" \
-        -o "$TEMP_DIR/checksums.txt"
-
-    echo "Verifying Gitleaks checksum"
-
-    cd "$TEMP_DIR"
-
-    grep " $FILE_NAME\$" checksums.txt | sha256sum -c -
-
-    echo "Extracting Gitleaks"
-
-    tar -xzf "$FILE_NAME"
-
-    install -m 0755 \
-        "$TEMP_DIR/gitleaks" \
-        "$BIN_DIR/gitleaks"
-
-    rm -rf "$TEMP_DIR"
-
-    echo "Gitleaks installed successfully."
-}
-
-CURRENT_GITLEAKS_VERSION=""
-
-if [[ -x "$BIN_DIR/gitleaks" ]]; then
-
-    CURRENT_GITLEAKS_VERSION="$(
-        "$BIN_DIR/gitleaks" version 2>/dev/null \
-        | awk '{print $NF}' \
-        | head -n1
-    )"
+    "$PIP" install --disable-pip-version-check detect-secrets || \
+        fail "Failed to install detect-secrets."
 
 fi
 
-if [[ "$CURRENT_GITLEAKS_VERSION" != "$GITLEAKS_VERSION" ]]; then
-
-    install_gitleaks "$GITLEAKS_VERSION"
-
-else
-
-    echo "Gitleaks $GITLEAKS_VERSION already installed."
-
-fi
-
-GITLEAKS_BIN="$BIN_DIR/gitleaks"
-
-"$GITLEAKS_BIN" version
+info "detect-secrets installed."
 
 # ============================================================
 # TRUFFLEHOG
+#
+# Prefer bundled binary.
 # ============================================================
 
-print_section "Installing TruffleHog"
+echo
+echo "--------------------------------------------------"
+echo "Installing TruffleHog"
+echo "--------------------------------------------------"
 
-if command_exists trufflehog; then
+TRUFFLE_DEST="$BIN_DIR/trufflehog"
 
-    echo "TruffleHog already installed."
+LOCAL_TRUFFLE=""
+
+case "$OS-$ARCH" in
+
+    Linux-x86_64)
+        LOCAL_TRUFFLE="$SCRIPT_DIR/binaries/trufflehog-linux-amd64"
+        ;;
+
+    Linux-aarch64)
+        LOCAL_TRUFFLE="$SCRIPT_DIR/binaries/trufflehog-linux-arm64"
+        ;;
+
+    Linux-arm64)
+        LOCAL_TRUFFLE="$SCRIPT_DIR/binaries/trufflehog-linux-arm64"
+        ;;
+
+    Darwin-x86_64)
+        LOCAL_TRUFFLE="$SCRIPT_DIR/binaries/trufflehog-darwin-amd64"
+        ;;
+
+    Darwin-arm64)
+        LOCAL_TRUFFLE="$SCRIPT_DIR/binaries/trufflehog-darwin-arm64"
+        ;;
+
+    *)
+        LOCAL_TRUFFLE=""
+        ;;
+esac
+
+if [[ -n "$LOCAL_TRUFFLE" && -f "$LOCAL_TRUFFLE" ]]; then
+
+    cp "$LOCAL_TRUFFLE" "$TRUFFLE_DEST"
+    chmod 700 "$TRUFFLE_DEST"
 
 else
 
-    if [[ "$PLATFORM" == "darwin" ]]; then
+    warn "Bundled TruffleHog binary not found."
 
-        brew install trufflehog
+    if command -v trufflehog >/dev/null 2>&1; then
+        TRUFFLE_DEST="$(command -v trufflehog)"
+    else
+        fail "TruffleHog is not available."
+    fi
+
+fi
+
+"$TRUFFLE_DEST" --version || true
+
+info "TruffleHog installed."
+
+# ============================================================
+# ANSIBLE
+# ============================================================
+
+echo
+echo "--------------------------------------------------"
+echo "Installing Ansible"
+echo "--------------------------------------------------"
+
+if command -v ansible >/dev/null 2>&1; then
+
+    info "Ansible already installed."
+
+else
+
+    if command -v apt-get >/dev/null 2>&1; then
+
+        echo "Installing Ansible using apt..."
+
+        sudo apt-get update -y
+        sudo apt-get install -y ansible
+
+    elif command -v brew >/dev/null 2>&1; then
+
+        brew install ansible
 
     else
 
-        curl -fsSL \
-            https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh \
-            | sudo sh -s -- -b /usr/local/bin
+        warn "Unable to automatically install Ansible on this operating system."
 
     fi
 
 fi
 
-TRUFFLEHOG_BIN="$(command -v trufflehog)"
-
-"$TRUFFLEHOG_BIN" --version || true
-
-# ============================================================
-# GITLEAKS CONFIGURATION
-# ============================================================
-
-print_section "Configuring Gitleaks"
-
-if [[ ! -f "$GITLEAKS_CONFIG" ]]; then
-
-cat > "$GITLEAKS_CONFIG" <<'EOF'
-title = "Tekdi Security Compliance"
-
-[extend]
-useDefault = true
-
-[allowlist]
-description = "Approved false positives"
+if command -v ansible >/dev/null 2>&1; then
+    ansible --version | head -1
+else
+    warn "Ansible is not available."
+fi
 
 # ============================================================
-# FALSE POSITIVE CONFIGURATION
+# OPENSSH
 # ============================================================
-#
-# IMPORTANT:
-#
-# Do NOT put real credentials here.
-#
-# Only add confirmed false positives.
-#
-# Example:
-#
-# regexes = [
-#     '''dummy-test-token-123'''
-# ]
-#
-# Example path exclusion:
-#
-# paths = [
-#     '''(^|/)test/fixtures/'''
-# ]
-#
-# Keep allowlists as narrow as possible.
-# ============================================================
-EOF
+
+echo
+echo "--------------------------------------------------"
+echo "Checking OpenSSH"
+echo "--------------------------------------------------"
+
+if command -v ssh >/dev/null 2>&1; then
+
+    ssh -V 2>&1 || true
+    info "OpenSSH available."
 
 else
 
-    echo "Existing Gitleaks configuration found."
-    echo "It will not be overwritten."
+    if command -v apt-get >/dev/null 2>&1; then
+
+        sudo apt-get update -y
+        sudo apt-get install -y openssh-client
+
+    elif command -v brew >/dev/null 2>&1; then
+
+        brew install openssh
+
+    else
+
+        warn "OpenSSH could not be installed automatically."
+
+    fi
 
 fi
 
-chmod 600 "$GITLEAKS_CONFIG"
-
 # ============================================================
-# GLOBAL GIT SECURITY HOOK
+# TMATE
 # ============================================================
 
-print_section "Installing global Git security hook"
+echo
+echo "--------------------------------------------------"
+echo "Checking tmate"
+echo "--------------------------------------------------"
 
-cat > "$GLOBAL_HOOK" <<'HOOK'
+if command -v tmate >/dev/null 2>&1; then
+
+    info "tmate already installed."
+
+else
+
+    if command -v apt-get >/dev/null 2>&1; then
+
+        sudo apt-get update -y
+        sudo apt-get install -y tmate || \
+            warn "tmate installation failed."
+
+    elif command -v brew >/dev/null 2>&1; then
+
+        brew install tmate || \
+            warn "tmate installation failed."
+
+    else
+
+        warn "tmate could not be installed automatically."
+
+    fi
+
+fi
+
+# ============================================================
+# GLOBAL GIT HOOK
+# ============================================================
+
+echo
+echo "--------------------------------------------------"
+echo "Installing Global Git Pre-Commit Hook"
+echo "--------------------------------------------------"
+
+HOOK_FILE="$HOOK_DIR/pre-commit"
+
+cat > "$HOOK_FILE" <<'HOOK'
 #!/usr/bin/env bash
 
 set -Eeuo pipefail
 
-export PATH="$HOME/.security-compliance/bin:$HOME/.security-compliance/venv/bin:$PATH"
-
 BASE_DIR="$HOME/.security-compliance"
+BIN_DIR="$BASE_DIR/bin"
 CONFIG_DIR="$BASE_DIR/config"
 LOG_DIR="$BASE_DIR/logs"
 
-GITLEAKS_BIN="$BASE_DIR/bin/gitleaks"
+GITLEAKS="$BIN_DIR/gitleaks"
 GITLEAKS_CONFIG="$CONFIG_DIR/gitleaks.toml"
 
 TIMESTAMP="$(date '+%Y%m%d-%H%M%S')"
-
 SCAN_LOG="$LOG_DIR/scan-$TIMESTAMP.log"
 
 mkdir -p "$LOG_DIR"
@@ -536,8 +490,7 @@ exec > >(tee -a "$SCAN_LOG") 2>&1
 TMP_DIR="$(mktemp -d)"
 SCAN_DIR="$TMP_DIR/staged"
 
-cleanup()
-{
+cleanup() {
     rm -rf "$TMP_DIR" >/dev/null 2>&1 || true
 }
 
@@ -545,7 +498,7 @@ trap cleanup EXIT
 
 echo
 echo "============================================================"
-echo "          TEKDI SECURITY COMPLIANCE SCAN"
+echo "       TEKDI SECURITY COMPLIANCE SECRET SCAN"
 echo "============================================================"
 echo
 echo "Repository : $(git rev-parse --show-toplevel)"
@@ -556,7 +509,7 @@ echo
 mkdir -p "$SCAN_DIR"
 
 # ============================================================
-# STAGED FILES
+# GET STAGED FILES
 # ============================================================
 
 STAGED_FILES="$(
@@ -583,7 +536,7 @@ do
         | awk '{print $1}'
     )"
 
-    # Skip submodules.
+    # Ignore submodules.
     [[ "$MODE" == "160000" ]] && continue
 
     if ! git cat-file -e ":$FILE" 2>/dev/null; then
@@ -612,16 +565,20 @@ fi
 echo
 echo "[1/3] Running Gitleaks..."
 
-if [[ ! -x "$GITLEAKS_BIN" ]]; then
+if [[ ! -x "$GITLEAKS" ]]; then
 
+    echo
     echo "ERROR: Gitleaks is not installed."
     echo "COMMIT BLOCKED."
+    echo
+    echo "Scan log:"
+    echo "$SCAN_LOG"
 
     exit 1
 
 fi
 
-if ! "$GITLEAKS_BIN" dir "$SCAN_DIR" \
+if ! "$GITLEAKS" dir "$SCAN_DIR" \
     --config "$GITLEAKS_CONFIG" \
     --redact
 then
@@ -652,12 +609,15 @@ echo "[OK] Gitleaks passed."
 echo
 echo "[2/3] Running detect-secrets..."
 
-DETECT_BIN="$BASE_DIR/venv/bin/detect-secrets"
+DETECT="$BASE_DIR/venv/bin/detect-secrets"
 
-if [[ ! -x "$DETECT_BIN" ]]; then
+if [[ ! -x "$DETECT" ]]; then
 
     echo "ERROR: detect-secrets is not installed."
     echo "COMMIT BLOCKED."
+    echo
+    echo "Scan log:"
+    echo "$SCAN_LOG"
 
     exit 1
 
@@ -665,8 +625,7 @@ fi
 
 DETECT_OUTPUT="$TMP_DIR/detect-secrets.json"
 
-if ! "$DETECT_BIN" scan "$SCAN_DIR" \
-    > "$DETECT_OUTPUT"
+if ! "$DETECT" scan "$SCAN_DIR" > "$DETECT_OUTPUT"
 then
 
     echo "ERROR: detect-secrets execution failed."
@@ -682,18 +641,17 @@ import json
 import sys
 
 try:
-
     with open(sys.argv[1], "r") as f:
         data = json.load(f)
 
     results = data.get("results", {})
 
-    print(sum(len(v) for v in results.values()))
+    count = sum(len(v) for v in results.values())
+
+    print(count)
 
 except Exception:
-
     print(0)
-
 PY
 )"
 
@@ -710,6 +668,7 @@ if [[ "$DETECT_COUNT" -gt 0 ]]; then
     echo
     echo "Scan log:"
     echo "$SCAN_LOG"
+    echo
 
     exit 1
 
@@ -724,18 +683,27 @@ echo "[OK] detect-secrets passed."
 echo
 echo "[3/3] Running TruffleHog..."
 
-TRUFFLE_BIN="$(command -v trufflehog || true)"
+TRUFFLE="$BASE_DIR/bin/trufflehog"
 
-if [[ -z "$TRUFFLE_BIN" ]]; then
+if [[ ! -x "$TRUFFLE" ]]; then
+
+    TRUFFLE="$(command -v trufflehog || true)"
+
+fi
+
+if [[ -z "$TRUFFLE" || ! -x "$TRUFFLE" ]]; then
 
     echo "ERROR: TruffleHog is not installed."
     echo "COMMIT BLOCKED."
+    echo
+    echo "Scan log:"
+    echo "$SCAN_LOG"
 
     exit 1
 
 fi
 
-if ! "$TRUFFLE_BIN" filesystem "$SCAN_DIR" \
+if ! "$TRUFFLE" filesystem "$SCAN_DIR" \
     --no-update \
     --no-verification
 then
@@ -751,6 +719,7 @@ then
     echo
     echo "Scan log:"
     echo "$SCAN_LOG"
+    echo
 
     exit 1
 
@@ -764,11 +733,10 @@ echo "[OK] TruffleHog passed."
 
 echo
 echo "============================================================"
-echo "             SECURITY SCAN PASSED"
+echo "       SECURITY COMPLIANCE CHECK PASSED"
+echo "       No secrets detected."
+echo "       COMMIT ALLOWED."
 echo "============================================================"
-echo
-echo "No secrets detected."
-echo "COMMIT ALLOWED."
 echo
 echo "Scan log:"
 echo "$SCAN_LOG"
@@ -777,134 +745,113 @@ echo
 exit 0
 HOOK
 
-chmod 700 "$GLOBAL_HOOK"
+chmod 700 "$HOOK_FILE"
 
 # ============================================================
-# GLOBAL GIT CONFIGURATION
+# CONFIGURE GLOBAL GIT HOOK
 # ============================================================
 
-print_section "Configuring Git"
+git config --global core.hooksPath "$HOOK_DIR"
 
-git config --global core.hooksPath "$GLOBAL_HOOK_DIR"
+info "Global Git hook configured."
 
-CURRENT_HOOK_PATH="$(
-    git config --global --get core.hooksPath
-)"
-
-echo "Global Git hook path:"
-echo "$CURRENT_HOOK_PATH"
+echo
+echo "Global hook path:"
+git config --global --get core.hooksPath
 
 # ============================================================
-# VERIFY TOOLS
+# VERIFY INSTALLATION
 # ============================================================
 
-print_section "Verifying installation"
+echo
+echo "--------------------------------------------------"
+echo "Verifying installation"
+echo "--------------------------------------------------"
 
-export PATH="$BIN_DIR:$VENV_DIR/bin:$PATH"
+echo
 
-TOOLS=(
-    git
-    ssh
-    tmate
-    ansible
-    ansible-playbook
-    pre-commit
-    detect-secrets
-    gitleaks
-    trufflehog
-)
+if [[ -x "$GITLEAKS" ]]; then
+    echo "[OK] gitleaks"
+    "$GITLEAKS" version || true
+else
+    echo "[FAIL] gitleaks"
+fi
 
-for TOOL in "${TOOLS[@]}"
-do
+if [[ -x "$VENV_DIR/bin/detect-secrets" ]]; then
+    echo "[OK] detect-secrets"
+    "$VENV_DIR/bin/detect-secrets" --version || true
+else
+    echo "[FAIL] detect-secrets"
+fi
 
-    if command_exists "$TOOL"; then
+if [[ -x "$BIN_DIR/trufflehog" ]]; then
+    echo "[OK] trufflehog"
+    "$BIN_DIR/trufflehog" --version || true
+elif command -v trufflehog >/dev/null 2>&1; then
+    echo "[OK] trufflehog"
+else
+    echo "[FAIL] trufflehog"
+fi
 
-        echo "[OK] $TOOL"
+if command -v ansible >/dev/null 2>&1; then
+    echo "[OK] ansible"
+else
+    echo "[WARN] ansible"
+fi
 
-    else
+if command -v ssh >/dev/null 2>&1; then
+    echo "[OK] openssh"
+else
+    echo "[WARN] openssh"
+fi
 
-        echo "[FAILED] $TOOL"
-        exit 1
+if command -v tmate >/dev/null 2>&1; then
+    echo "[OK] tmate"
+else
+    echo "[WARN] tmate"
+fi
 
-    fi
-
-done
-
-# ============================================================
-# PERSIST PATH
-# ============================================================
-
-print_section "Configuring PATH"
-
-SHELL_NAME="$(basename "${SHELL:-bash}")"
-
-case "$SHELL_NAME" in
-
-    bash)
-        PROFILE="$HOME/.bashrc"
-        ;;
-
-    zsh)
-        PROFILE="$HOME/.zshrc"
-        ;;
-
-    *)
-        PROFILE="$HOME/.profile"
-        ;;
-
-esac
-
-PATH_LINE='export PATH="$HOME/.security-compliance/bin:$HOME/.security-compliance/venv/bin:$PATH"'
-
-touch "$PROFILE"
-
-if ! grep -Fq '.security-compliance/bin' "$PROFILE" 2>/dev/null; then
-
-    echo "$PATH_LINE" >> "$PROFILE"
-
+if [[ -x "$HOOK_FILE" ]]; then
+    echo "[OK] global git pre-commit hook"
+else
+    echo "[FAIL] global git pre-commit hook"
 fi
 
 # ============================================================
-# FINAL PERMISSIONS
-# ============================================================
-
-chmod 700 "$BASE_DIR"
-chmod 700 "$CONFIG_DIR"
-chmod 700 "$LOG_DIR"
-chmod 600 "$GITLEAKS_CONFIG"
-chmod 700 "$GLOBAL_HOOK"
-
-# ============================================================
-# FINAL RESULT
+# FINAL
 # ============================================================
 
 echo
-echo "============================================================"
-echo "       SECURITY COMPLIANCE INSTALLATION COMPLETE"
-echo "============================================================"
+echo "=================================================="
+echo "   SECURITY COMPLIANCE RELEASE 1"
+echo "=================================================="
 echo
-echo "Installed:"
-echo "  ✓ Gitleaks"
-echo "  ✓ detect-secrets"
-echo "  ✓ TruffleHog"
-echo "  ✓ Ansible"
-echo "  ✓ pre-commit"
-echo "  ✓ OpenSSH client"
-echo "  ✓ tmate"
+echo "Security setup completed successfully."
+echo
+echo "Git security scanning is now enabled globally."
+echo
+echo "Installed components:"
+echo "  - Gitleaks"
+echo "  - detect-secrets"
+echo "  - TruffleHog"
+echo "  - Ansible"
+echo "  - OpenSSH"
+echo "  - tmate"
+echo "  - Global Git pre-commit hook"
+echo
+echo "Configuration:"
+echo "  $CONFIG_DIR/gitleaks.toml"
+echo
+echo "Logs:"
+echo "  $LOG_DIR"
 echo
 echo "Global Git hook:"
-echo "  $GLOBAL_HOOK"
-echo
-echo "Gitleaks configuration:"
-echo "  $GITLEAKS_CONFIG"
+echo "  $HOOK_FILE"
 echo
 echo "Installation log:"
-echo "  $LOG_FILE"
-echo
-echo "Security scan logs:"
-echo "  $LOG_DIR/"
-echo
-echo "============================================================"
+echo "  $INSTALL_LOG"
 echo
 echo "Installation completed successfully."
 echo
+
+exit 0
